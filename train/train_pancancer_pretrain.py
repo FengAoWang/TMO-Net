@@ -56,29 +56,23 @@ def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimi
                 omic = omic.cuda()
                 # print(omic.size())
                 input_x.append(omic)
-            output, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, cross_infer_dsc_loss = model(input_x, os_event.size(0))
-            total_self_elbo += self_elbo.item()
-            total_cross_elbo += cross_elbo.item()
-            total_cross_infer_loss += cross_infer_loss.item()
-            # ce_loss = criterion(cancer_type, label)
-            # total_ce_loss += ce_loss.item()
             un_dfs_freeze(model.discriminator)
             un_dfs_freeze(model.infer_discriminator)
-            # ad_loss = model.adversarial_loss(os_event.size(0), output)
-            ad_loss = dsc_loss + cross_infer_dsc_loss
+            ad_loss = model.compute_dsc_loss(input_x, os_event.size(0))
             total_ad_loss += ad_loss.item()
-            # print(loss)
-            # print(dsc_loss)
+
             dsc_optimizer.zero_grad()
             ad_loss.backward(retain_graph=True)
             dsc_optimizer.step()
 
             dfs_freeze(model.discriminator)
             dfs_freeze(model.infer_discriminator)
-            output, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, cross_infer_dsc_loss = model(input_x, os_event.size(0))
+            loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss = model.compute_generate_loss(input_x, os_event.size(0))
 
-            loss = self_elbo + cross_elbo + 0.1 * (cross_infer_loss * cross_infer_loss -
-                                                   dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1)
+            total_self_elbo += self_elbo.item()
+            total_cross_elbo += cross_elbo.item()
+            total_cross_infer_loss += cross_infer_loss.item()
+
             # loss = ce_loss
             total_dsc_loss += dsc_loss.item()
             total_loss += loss.item()
@@ -153,9 +147,9 @@ def val_pretrain(test_dataloader, model, epoch, cancer):
     return Loss
 
 
-Pan_Cancer = ['PAAD', 'BLCA', 'GBM', 'CESC', 'LUSC', 'KIRP', 'LIHC', 'SARC', 'LGG', 'LUAD', 'KIRC', 'BRCA', 'HNSC']
+# Pan_Cancer = ['PAAD', 'BLCA', 'GBM', 'CESC', 'LUSC', 'KIRP', 'LIHC', 'SARC', 'LGG', 'LUAD', 'KIRC', 'BRCA', 'HNSC']
 
-# Pan_Cancer = ['BLCA']
+Pan_Cancer = ['BLCA']
 omics_type = ['gex', 'mut', 'cnv']
 omics_data = ['gaussian', 'gaussian', 'gaussian']
 fold = 0

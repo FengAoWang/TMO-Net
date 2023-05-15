@@ -164,7 +164,19 @@ class Clue_model(nn.Module):
             dfs_freeze(self.encoders)
 
     # 预留参数 omics，实现缺失模态训练
-    def forward(self, input_x, batch_size):
+    # def forward(self, input_x, batch_size):
+    #     output = [[0 for j in range(len(input_x))] for i in range(len(input_x))]
+    #     for i in range(len(input_x)):
+    #         for j in range(len(input_x)):
+    #             output[i][j] = self.encoders[i][j](input_x[i])
+    #
+    #     self_elbo = self.self_elbo([output[i][i] for i in range(len(input_x))], input_x)
+    #     cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size)
+    #     cross_infer_loss = self.cross_infer_loss(output)
+    #     dsc_loss = self.adversarial_loss(batch_size, output)
+    #     return output, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, cross_infer_dsc_loss
+
+    def compute_generate_loss(self, input_x, batch_size):
         output = [[0 for j in range(len(input_x))] for i in range(len(input_x))]
         for i in range(len(input_x)):
             for j in range(len(input_x)):
@@ -174,7 +186,18 @@ class Clue_model(nn.Module):
         cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size)
         cross_infer_loss = self.cross_infer_loss(output)
         dsc_loss = self.adversarial_loss(batch_size, output)
-        return output, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, cross_infer_dsc_loss
+        generate_loss = self_elbo + cross_elbo + cross_infer_loss * cross_infer_loss - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
+        return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss
+
+    def compute_dsc_loss(self, input_x, batch_size):
+        output = [[0 for j in range(len(input_x))] for i in range(len(input_x))]
+        for i in range(len(input_x)):
+            for j in range(len(input_x)):
+                output[i][j] = self.encoders[i][j](input_x[i])
+
+        cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size)
+        dsc_loss = self.adversarial_loss(batch_size, output)
+        return cross_infer_dsc_loss + dsc_loss
 
     def share_representation(self, output):
         share_features = []
