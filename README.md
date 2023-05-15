@@ -1,2 +1,2 @@
 # cross_encoders
-this is pretrain tumor foundation model for multitasks
+This is pretrain tumor foundation model for multi-tasks
