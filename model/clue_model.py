@@ -158,6 +158,8 @@ class Clue_model(nn.Module):
                                                                nn.ReLU(),
                                                                nn.Linear(16, 2))
                                                  for i in range(self.k))
+        #   loss function hyperparameter
+        self.loss_weight = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], requires_grad=True)
 
         self.omics_data = omics_data
         if pretrain:
@@ -197,7 +199,7 @@ class Clue_model(nn.Module):
 
         cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size)
         dsc_loss = self.adversarial_loss(batch_size, output)
-        return cross_infer_dsc_loss + dsc_loss
+        return cross_infer_dsc_loss, dsc_loss
 
     def share_representation(self, output):
         share_features = []
