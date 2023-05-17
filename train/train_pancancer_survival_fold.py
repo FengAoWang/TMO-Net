@@ -14,6 +14,8 @@ from util.loss_function import cox_loss, c_index
 from lifelines.utils import concordance_index
 
 
+
+
 def set_seed(seed):
     import os
     random.seed(seed)
@@ -37,7 +39,6 @@ def get_fold_ids(cancer, fold):
 
 
 # Pan_Cancer = ['BLCA', 'GBM', 'CESC', 'LUSC', 'KIRP', 'LIHC', 'SARC', 'PAAD', 'LGG', 'LUAD', 'KIRC', 'BRCA', 'HNSC']
-
 # test_cancer = ['PAAD']
 
 
@@ -78,7 +79,10 @@ def train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omic
             tepoch.set_postfix(loss=CoxLoss.item())
 
         print('cox loss: ', total_loss / len(train_dataloader))
-        train_c_index = concordance_index(train_event_times.detach().cpu().numpy(), -train_risk_score.detach().cpu().numpy(), train_censors.detach().cpu().numpy())
+        train_c_index = concordance_index(train_event_times.detach().cpu().numpy(),
+                                          -train_risk_score.detach().cpu().numpy(),
+                                          train_censors.detach().cpu().numpy())
+
         print(f'{cancer} train survival c-index: ', train_c_index)
 
 
@@ -143,7 +147,7 @@ def cal_c_index(dataloader, model, best_c_index, best_c_indices, omics):
 
 
 omics_type = ['gex', 'mut', 'cnv']
-test_cancer = ['BRCA', 'LGG', 'LIHC', 'PAAD', 'LUSC', 'LUAD',  'BLCA',  'HNSC', 'KIRP',  'GBM', 'CESC',  'SARC', 'KIRC']
+test_cancer = ['LGG', 'BRCA',  'LIHC', 'PAAD', 'LUSC', 'LUAD',  'BLCA',  'HNSC', 'KIRP',  'GBM', 'CESC',  'SARC', 'KIRC']
 
 cancer_c_index = []
 fold = 1
@@ -151,7 +155,7 @@ TCGA_file_path = '/home/wfa/project/clue/data/SurvBoard/TCGA/'
 model_path = '/home/wfa/project/clue/model/model_dict/all_pancancer_pretrain_model_fold0_dim64_latent_z.pt'
 task = {'output_dim': 1}
 fixed = False
-epochs = 2
+epochs = 1
 
 torch.cuda.set_device(0)
 omics = {'gex': 0, 'mut': 1, 'cnv': 2}
@@ -161,6 +165,7 @@ for cancer in test_cancer:
     print(f'{cancer} start training')
 
     torch.cuda.empty_cache()
+
     cancer_dataset = TCGA_Sur_Board(TCGA_file_path, cancer, omics_type)
     torch.cuda.set_device(0)
 
@@ -190,6 +195,10 @@ for cancer in test_cancer:
     best_c_indices.insert(0, cancer)
     cancer_c_index.append(best_c_indices)
 
+    del model
+    del optimizer
+    del train_dataloader
+    del test_dataloader
     torch.cuda.empty_cache()
 
 
