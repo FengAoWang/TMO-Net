@@ -37,24 +37,20 @@ def get_fold_ids(cancer, fold):
 
 
 # Pan_Cancer = ['BLCA', 'GBM', 'CESC', 'LUSC', 'KIRP', 'LIHC', 'SARC', 'PAAD', 'LGG', 'LUAD', 'KIRC', 'BRCA', 'HNSC']
-device_ids = [0, 1, 2, 3] #
-omics_type = ['gex', 'mut', 'cnv']
-test_cancer = ['LGG', 'HNSC', 'BLCA', 'BRCA',   'KIRP', 'PAAD',   'GBM', 'CESC', 'LUSC',  'LIHC', 'SARC',  'LUAD', 'KIRC']
+
 # test_cancer = ['PAAD']
 
 
 def adjust_learning_rate(optimizer, epoch, start_lr):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    lr = start_lr * (0.1 ** (epoch // 6))
+    lr = start_lr * (0.1 ** (epoch // 5))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
 
 def train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omics):
     model.train()
-    # model = model.state_dict()
-    # for epoch in range(epochs):
-    print(f'-----start epoch {epoch} training-----')
+    print(f'-----start {cancer} epoch {epoch} training-----')
     total_loss = 0
     train_risk_score = torch.Tensor([]).cuda()
     train_censors = torch.Tensor([]).cuda()
@@ -68,17 +64,13 @@ def train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omic
             train_censors = torch.concat((train_censors, os_event))
             train_event_times = torch.concat((train_event_times, os_time))
 
-            input_x = []
-            for key in omics_data.keys():
-                omic = omics_data[key]
-                omic = omic.cuda()
-                # print(omic.size())
-                input_x.append(omic)
-            risk_score, self_elbo, cross_elbo, cross_infer_loss, dsc_loss = model(input_x, os_event.size(0), omics)
+            input_x = [omics_data[key].cuda() for key in omics_data.keys()]
+
+            risk_score = model(input_x, os_event.size(0), omics)
+            pretrain_loss, _, _, _, _ = model.cross_encoders.compute_generate_loss(input_x, os_event.size(0))
             train_risk_score = torch.concat((train_risk_score, risk_score))
             CoxLoss = cox_loss(os_time, os_event, risk_score)
-            # CELoss = self_elbo + 0.1 * (cross_elbo + cross_infer_loss * cross_infer_loss - dsc_loss * 0.2)
-            loss = CoxLoss
+            loss = CoxLoss + 0.1 * pretrain_loss
             total_loss += CoxLoss.item()
             optimizer.zero_grad()
             loss.backward()
@@ -86,7 +78,6 @@ def train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omic
             tepoch.set_postfix(loss=CoxLoss.item())
 
         print('cox loss: ', total_loss / len(train_dataloader))
-        # train_c_index = c_index(train_risk_score, train_event_times, train_censors).item()
         train_c_index = concordance_index(train_event_times.detach().cpu().numpy(), -train_risk_score.detach().cpu().numpy(), train_censors.detach().cpu().numpy())
         print(f'{cancer} train survival c-index: ', train_c_index)
 
@@ -94,107 +85,113 @@ def train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omic
 def cal_c_index(dataloader, model, best_c_index, best_c_indices, omics):
     model.eval()
     best_c_index_list = best_c_indices
+    device = next(model.parameters()).device
+
     with torch.no_grad():
-        gex_risk_score = torch.zeros((len(dataloader)))
-        mut_risk_score = torch.zeros((len(dataloader)))
-        cnv_risk_score = torch.zeros((len(dataloader)))
-        gex_cnv_risk_score = torch.zeros((len(dataloader)))
-        gex_mut_risk_score = torch.zeros((len(dataloader)))
-        cnv_mut_risk_score = torch.zeros((len(dataloader)))
-        risk_score = torch.zeros((len(dataloader)))
+        risk_scores = {
+            'all': torch.zeros((len(dataloader)), device=device),
+            'gex': torch.zeros((len(dataloader)), device=device),
+            'mut': torch.zeros((len(dataloader)), device=device),
+            'cnv': torch.zeros((len(dataloader)), device=device),
+            'gex_cnv': torch.zeros((len(dataloader)), device=device),
+            'gex_mut': torch.zeros((len(dataloader)), device=device),
+            'cnv_mut': torch.zeros((len(dataloader)), device=device),
+        }
 
         censors = torch.zeros((len(dataloader)))
         event_times = torch.zeros((len(dataloader)))
 
-    for i, data in enumerate(test_dataloader):
-        os_time, os_event, omics_data = data
-        input_x = []
-        for key in omics_data.keys():
-            omic = omics_data[key]
-            omic = omic.cuda()
-            # print(omic.size())
-            input_x.append(omic)
-        os_event = os_event.cuda()
-        os_time = os_time.cuda()
-        survival_risk, self_elbo, cross_elbo, cross_infer_loss, dsc_loss = model(input_x, os_event.size(0), omics)
-        gex_survival_risk, _, _, _, _ = model(input_x, os_event.size(0), {'gex': 0})
-        mut_survival_risk, _, _, _, _ = model(input_x, os_event.size(0), {'mut': 1})
-        cnv_survival_risk, _, _, _, _ = model(input_x, os_event.size(0), {'cnv': 2})
+        for i, data in enumerate(test_dataloader):
+            os_time, os_event, omics_data = data
+            input_x = [omics_data[key].cuda() for key in omics_data.keys()]
+            os_event = os_event.cuda()
+            os_time = os_time.cuda()
 
-        gex_cnv_survival_risk, _, _, _, _ = model(input_x, os_event.size(0), {'gex': 0, 'cnv': 2})
-        gex_mut_survival_risk, _, _, _, _ = model(input_x, os_event.size(0), {'gex': 0, 'mut': 1})
-        cnv_mut_survival_risk, _, _, _, _ = model(input_x, os_event.size(0), {'cnv': 2, 'mut': 1})
+            survival_risk = model(input_x, os_event.size(0), omics)
 
-        gex_risk_score[i] = gex_survival_risk
-        mut_risk_score[i] = mut_survival_risk
-        cnv_risk_score[i] = cnv_survival_risk
-        gex_mut_risk_score[i] = gex_mut_survival_risk
-        gex_cnv_risk_score[i] = gex_cnv_survival_risk
-        cnv_mut_risk_score[i] = cnv_mut_survival_risk
-        risk_score[i] = survival_risk
+            gex_survival_risk = model(input_x, os_event.size(0), {'gex': 0})
+            mut_survival_risk = model(input_x, os_event.size(0), {'mut': 1})
+            cnv_survival_risk = model(input_x, os_event.size(0), {'cnv': 2})
 
-        censors[i] = os_event
-        event_times[i] = os_time
+            gex_cnv_survival_risk = model(input_x, os_event.size(0), {'gex': 0, 'cnv': 2})
+            gex_mut_survival_risk = model(input_x, os_event.size(0), {'gex': 0, 'mut': 1})
+            cnv_mut_survival_risk = model(input_x, os_event.size(0), {'cnv': 2, 'mut': 1})
 
-    test_c_index = concordance_index(event_times.detach().cpu().numpy(), -risk_score.detach().cpu().numpy(),  censors.detach().cpu().numpy())
-    gex_c_index = concordance_index(event_times.detach().cpu().numpy(), -gex_risk_score.detach().cpu().numpy(), censors.detach().cpu().numpy())
-    mut_c_index = concordance_index(event_times.detach().cpu().numpy(), -mut_risk_score.detach().cpu().numpy(), censors.detach().cpu().numpy())
-    cnv_c_index = concordance_index(event_times.detach().cpu().numpy(), -cnv_risk_score.detach().cpu().numpy(), censors.detach().cpu().numpy())
-    gex_cnv_c_index = concordance_index(event_times.detach().cpu().numpy(), -gex_cnv_risk_score.detach().cpu().numpy(), censors.detach().cpu().numpy())
-    gex_mut_c_index = concordance_index(event_times.detach().cpu().numpy(), -gex_mut_risk_score.detach().cpu().numpy(), censors.detach().cpu().numpy())
-    cnv_mut_c_index = concordance_index(event_times.detach().cpu().numpy(), -cnv_mut_risk_score.detach().cpu().numpy(), censors.detach().cpu().numpy())
+            risk_scores['gex'][i] = gex_survival_risk
+            risk_scores['mut'][i] = mut_survival_risk
+            risk_scores['cnv'][i] = cnv_survival_risk
+            risk_scores['gex_mut'][i] = gex_mut_survival_risk
+            risk_scores['gex_cnv'][i] = gex_cnv_survival_risk
+            risk_scores['cnv_mut'][i] = cnv_mut_survival_risk
+            risk_scores['all'][i] = survival_risk
 
-    if test_c_index > best_c_index:
-        best_c_index = test_c_index
-        best_c_index_list = [test_c_index, gex_c_index, mut_c_index, cnv_c_index, gex_cnv_c_index, gex_mut_c_index, cnv_mut_c_index]
+            censors[i] = os_event
+            event_times[i] = os_time
 
-    print(f'{cancer} test survival c-index: ', test_c_index, gex_c_index, mut_c_index, cnv_c_index, gex_cnv_c_index, gex_mut_c_index, cnv_mut_c_index)
+        c_indices = {}
+        for key in risk_scores.keys():
+            c_indices[key] = concordance_index(event_times.cpu().numpy(), -risk_scores[key].cpu().numpy(),
+                                               censors.cpu().numpy())
+
+        if c_indices['all'] > best_c_index:
+            best_c_index = c_indices['all']
+            best_c_index_list = [c_indices[key] for key in c_indices.keys()]
+
+        print(f'{cancer} test survival c-index: ', c_indices)
 
     return best_c_index_list, best_c_index
 
 
+omics_type = ['gex', 'mut', 'cnv']
+test_cancer = ['BRCA', 'LGG', 'LIHC', 'PAAD', 'LUSC', 'LUAD',  'BLCA',  'HNSC', 'KIRP',  'GBM', 'CESC',  'SARC', 'KIRC']
+
 cancer_c_index = []
-fold = 0
+fold = 1
+TCGA_file_path = '/home/wfa/project/clue/data/SurvBoard/TCGA/'
+model_path = '/home/wfa/project/clue/model/model_dict/all_pancancer_pretrain_model_fold0_dim64_latent_z.pt'
+task = {'output_dim': 1}
+fixed = False
+epochs = 2
+
+torch.cuda.set_device(0)
+omics = {'gex': 0, 'mut': 1, 'cnv': 2}
+omics_data_type = ['gaussian', 'gaussian', 'gaussian']
+
 for cancer in test_cancer:
     print(f'{cancer} start training')
+
     torch.cuda.empty_cache()
-    TCGA_file_path = '/home/wfa/project/clue/data/SurvBoard/TCGA/'
     cancer_dataset = TCGA_Sur_Board(TCGA_file_path, cancer, omics_type)
-    # model = Clue_model(3, [20531, 19687, 24776], 64, [1024, 512, 128])
-    epochs = 10
-    best_c_indices = []
-    # for fold in range(folds):
     torch.cuda.set_device(0)
-    omics = {'gex': 0, 'mut': 1, 'cnv': 2}
-    omics_data = ['gaussian', 'gaussian', 'gaussian']
+
     print(f'-----start fold {fold} training-----')
-    task = {'output_dim': 1}
-    fixed = False
-    # model = DownStream_predictor(3, [20531, 19687, 24776], 64, [1024, 512, 128],
-    #                              '', task, fixed)
-    model = DownStream_predictor(3, [20531, 19687, 24776], 64, [4096, 1024, 512],
-                                 '/home/wfa/project/clue/model/model_dict/all_pancancer_pretrain_model_fold0_dim64_latent_z.pt',
-                                 task, omics_data, fixed)
+
+    model = DownStream_predictor(3, [20531, 19687, 24776], 64, [4096, 1024, 512], model_path, task, omics_data_type, fixed)
     model.cuda()
-    # model = torch.nn.DataParallel(model, device_ids=device_ids)  # 指定要用到的设备
     param_groups = [
         {'params': model.cross_encoders.parameters(), 'lr': 0.00001},
-        {'params': model.downstream_predictor.parameters(), 'lr': 0.0005}
+        {'params': model.downstream_predictor.parameters(), 'lr': 0.00001}
     ]
+
     optimizer = torch.optim.Adam(param_groups)
     train_ids, test_ids = get_fold_ids(cancer, fold)
     train_dataloader = DataLoader(cancer_dataset, sampler=train_ids, batch_size=32, drop_last=True)
     test_dataloader = DataLoader(cancer_dataset, sampler=test_ids, batch_size=1)
+
     best_c_index = 0
+    best_c_indices = []
+
     for epoch in range(epochs):
         # adjust_learning_rate(optimizer, epoch, 0.0001)
         start_time = time.time()
-        model.train()
         train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omics)
         best_c_indices, best_c_index = cal_c_index(test_dataloader, model, best_c_index, best_c_indices, omics)
         print(f'{fold} time used: ', time.time() - start_time)
     best_c_indices.insert(0, cancer)
     cancer_c_index.append(best_c_indices)
+
+    torch.cuda.empty_cache()
+
 
 print(cancer_c_index)
 cancer_c_index = pd.DataFrame(cancer_c_index, columns=['cancer', f'{fold} multiomics', f'{fold} gex', f'{fold} mut', f'{fold} cnv', f'{fold} gex_cnv', f'{fold} gex_mut', f'{fold} cnv_mut'])
