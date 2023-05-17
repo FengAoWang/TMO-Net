@@ -1,8 +1,7 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-from util.loss_function import KL_loss, reconstruction_loss
-from torch.autograd import Variable
+from util.loss_function import KL_loss, reconstruction_loss, KL_divergence
 
 
 def reparameterize(mean, logvar):
@@ -142,6 +141,7 @@ class Clue_model(nn.Module):
         self.self_decoders = nn.ModuleList([decoder(latent_dim, modal_dim[i], hidden_dim) for i in range(self.k)])
 
         self.cross_decoders = nn.ModuleList([decoder(latent_dim, modal_dim[i], hidden_dim) for i in range(self.k)])
+
         #   modality-invariant representation
         self.share_encoder = nn.Sequential(nn.Linear(latent_dim, latent_dim),
                                            nn.BatchNorm1d(latent_dim),
@@ -165,25 +165,12 @@ class Clue_model(nn.Module):
         if pretrain:
             dfs_freeze(self.encoders)
 
-    # 预留参数 omics，实现缺失模态训练
-    # def forward(self, input_x, batch_size):
-    #     output = [[0 for j in range(len(input_x))] for i in range(len(input_x))]
-    #     for i in range(len(input_x)):
-    #         for j in range(len(input_x)):
-    #             output[i][j] = self.encoders[i][j](input_x[i])
-    #
-    #     self_elbo = self.self_elbo([output[i][i] for i in range(len(input_x))], input_x)
-    #     cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size)
-    #     cross_infer_loss = self.cross_infer_loss(output)
-    #     dsc_loss = self.adversarial_loss(batch_size, output)
-    #     return output, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, cross_infer_dsc_loss
+    def forward(self, input_x, batch_size):
+        output = [[self.encoders[i][j](input_x[i]) for j in range(len(input_x))] for i in range(len(input_x))]
+        return output
 
     def compute_generate_loss(self, input_x, batch_size):
-        output = [[0 for j in range(len(input_x))] for i in range(len(input_x))]
-        for i in range(len(input_x)):
-            for j in range(len(input_x)):
-                output[i][j] = self.encoders[i][j](input_x[i])
-
+        output = [[self.encoders[i][j](input_x[i]) for j in range(len(input_x))] for i in range(len(input_x))]
         self_elbo = self.self_elbo([output[i][i] for i in range(len(input_x))], input_x)
         cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size)
         cross_infer_loss = self.cross_infer_loss(output)
@@ -192,21 +179,13 @@ class Clue_model(nn.Module):
         return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss
 
     def compute_dsc_loss(self, input_x, batch_size):
-        output = [[0 for j in range(len(input_x))] for i in range(len(input_x))]
-        for i in range(len(input_x)):
-            for j in range(len(input_x)):
-                output[i][j] = self.encoders[i][j](input_x[i])
-
+        output = [[self.encoders[i][j](input_x[i]) for j in range(len(input_x))] for i in range(len(input_x))]
         cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size)
         dsc_loss = self.adversarial_loss(batch_size, output)
         return cross_infer_dsc_loss, dsc_loss
 
     def share_representation(self, output):
-        share_features = []
-        for i in range(self.k):
-            latent_z, mu, log_var = output[i][i]
-            shared_fe = self.share_encoder(mu)
-            share_features.append(shared_fe)
+        share_features = [self.share_encoder(output[i][i][1]) for i in range(self.k)]
         return share_features
 
     def self_elbo(self, input_x, input_omic):
@@ -242,7 +221,8 @@ class Clue_model(nn.Module):
                                                                                   self.omics_data[i])
             cross_infer_loss += reconstruction_loss(real_mu, poe_mu, 1.0, 'gaussian')
 
-            # cross_modal_KL_loss += KL_loss(poe_mu, poe_log_var, 1.0)
+            cross_modal_KL_loss += KL_divergence(poe_mu, real_mu, poe_log_var, real_log_var)
+
             real_modal = torch.tensor([1 for j in range(batch_size)]).cuda()
             infer_modal = torch.tensor([0 for j in range(batch_size)]).cuda()
             pred_real_modal = self.infer_discriminator[i](real_mu)
@@ -252,16 +232,16 @@ class Clue_model(nn.Module):
             cross_modal_dsc_loss += F.cross_entropy(pred_infer_modal, infer_modal, reduction='none')
 
         cross_modal_dsc_loss = cross_modal_dsc_loss.sum(0) / (self.k * batch_size)
-        return cross_elbo + cross_infer_loss, cross_modal_dsc_loss
+        return cross_elbo + cross_infer_loss + cross_modal_KL_loss, cross_modal_dsc_loss
 
     def cross_infer_loss(self, input_x):
-        latent_mu = [input_x[i][i][0] for i in range(len(input_x))]
+        latent_mu = [input_x[i][i][1] for i in range(len(input_x))]
         infer_loss = 0
         for i in range(len(input_x)):
             for j in range(len(input_x)):
                 if i != j:
                     latent_z_infer, latent_mu_infer, _ = input_x[j][i]
-                    infer_loss += reconstruction_loss(latent_z_infer, latent_mu[i], 1.0, 'gaussian')
+                    infer_loss += reconstruction_loss(latent_mu_infer, latent_mu[i], 1.0, 'gaussian')
         return infer_loss / self.k
 
     def adversarial_loss(self, batch_size, output):
@@ -279,15 +259,14 @@ class Clue_model(nn.Module):
         return dsc_loss
 
     def latent_z(self, input_x, omics):
-        output = [[0 for j in range(len(input_x))] for i in range(len(input_x))]
-        for i in range(len(input_x)):
-            for j in range(len(input_x)):
-                output[i][j] = self.encoders[i][j](input_x[i])
-        embedding_tensor = torch.Tensor([]).cuda()
+        input_len = len(input_x)
+        output = [[self.encoders[i][j](input_x[i]) for j in range(input_len)] for i in range(input_len)]
+        embedding_list = []
         keys = list(omics.keys())
         for i in range(self.k):
             latent_z, mu, log_var = output[omics[keys[i]]][i]
-            embedding_tensor = torch.concat((embedding_tensor, mu), dim=1)
+            embedding_list.append(mu)
+        embedding_tensor = torch.cat(embedding_list, dim=1)
         return embedding_tensor
 
 
@@ -319,7 +298,7 @@ class DownStream_predictor(nn.Module):
     # omics dict, 标注输入的数据
 
     def forward(self, input_x, batch_size, omics):
-        output, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, _ = self.cross_encoders(input_x, batch_size)
+        output = self.cross_encoders(input_x, batch_size)
         embedding_tensor = torch.Tensor([]).cuda()
         keys = list(omics.keys())
         non_negative_weights = F.relu(self.weights)
@@ -354,7 +333,7 @@ class DownStream_predictor(nn.Module):
             embedding_tensor = torch.concat((embedding_tensor, normalized_non_negative_weights[i] * poe_mu), dim=1)
 
         downstream_output = self.downstream_predictor(embedding_tensor)
-        return downstream_output, self_elbo, cross_elbo, cross_infer_loss, dsc_loss
+        return downstream_output
 
 
 class SNN_block(nn.Module):

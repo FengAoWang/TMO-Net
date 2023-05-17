@@ -154,7 +154,7 @@ Pan_Cancer = ['PAAD', 'BLCA', 'GBM', 'CESC', 'LUSC', 'KIRP', 'LIHC', 'SARC', 'LG
 omics_type = ['gex', 'mut', 'cnv']
 omics_data = ['gaussian', 'gaussian', 'gaussian']
 fold = 0
-torch.cuda.set_device(6)
+torch.cuda.set_device(5)
 model = Clue_model(3, [20531, 19687, 24776], 64, [4096, 1024, 512], omics_data)
 model.cuda()
 

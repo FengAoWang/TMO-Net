@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch
 import numpy as np
 from lifelines.utils import concordance_index
+from torch.distributions import Normal, kl_divergence
 
 
 def loss_func(recon_x, x, mu, logvar):
@@ -22,6 +23,30 @@ def KL_loss(mu, logvar, beta, c=0.0):
     # KLD_2 = KLD_2.sum(1).mean()
     # KLD_2 = beta * (KLD_2 - c).abs()
     return beta * KLD_1
+
+
+def KL_divergence(mu1, mu2, log_sigma1, log_sigma2):
+    p = Normal(mu1, torch.exp(log_sigma1))
+    q = Normal(mu2, torch.exp(log_sigma2))
+
+    # 计算KL损失
+    kl_loss = kl_divergence(p, q).mean()
+
+    # sigma1 = torch.exp(log_sigma1)
+    # sigma2 = torch.exp(log_sigma2)
+    #
+    # sigma1_inv = torch.inverse(sigma1)
+    # sigma2_det = torch.det(sigma2)
+    # sigma1_det = torch.det(sigma1)
+    # mu_diff = mu2 - mu1
+    #
+    # tr_term = torch.trace(torch.matmul(sigma1_inv, sigma2))
+    # quad_term = torch.matmul(torch.matmul(mu_diff.T, sigma1_inv), mu_diff)
+    # logdet_term = torch.log(sigma2_det / sigma1_det)
+    #
+    # kl_div = - 0.5 * (tr_term + quad_term - mu1.shape[0] - logdet_term)
+
+    return kl_loss
 
 
 def reconstruction_loss(recon_x, x, recon_param, dist):
