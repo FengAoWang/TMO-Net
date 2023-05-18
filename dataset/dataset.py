@@ -5,15 +5,17 @@ import torch
 import torch.nn as nn
 import pandas as pd
 
-PanCancer = {'ACC': 0, 'BLCA': 1, 'CESC': 2, 'CHOL': 3,
-            'COAD': 4, 'DLBC': 5, 'ESCA': 6, 'GBM': 7,
-            'HNSC': 8, 'KICH': 9, 'KIRC': 10, 'KIRP': 11,
-             'LGG': 12, 'LIHC': 13, 'LUAD': 14, 'LUSC': 15,
-             'MESO': 16, 'OV': 17, 'PAAD': 18, 'PCPG': 19,
-             'PRAD': 20, 'READ': 21, 'SARC': 22, 'SKCM': 23,
-             'STAD': 24, 'TGCT': 25, 'THCA': 26, 'THYM': 27,
-             'UCEC': 28, 'UCS': 29, 'UVM': 30, 'BRCA': 31
-             }
+
+PanCancer = {
+    'ACC': 0, 'BLCA': 1, 'CESC': 2, 'CHOL': 3,
+    'COAD': 4, 'DLBC': 5, 'ESCA': 6, 'GBM': 7,
+    'HNSC': 8, 'KICH': 9, 'KIRC': 10, 'KIRP': 11,
+    'LGG': 12, 'LIHC': 13, 'LUAD': 14, 'LUSC': 15,
+    'MESO': 16, 'OV': 17, 'PAAD': 18, 'PCPG': 19,
+    'PRAD': 20, 'READ': 21, 'SARC': 22, 'SKCM': 23,
+    'STAD': 24, 'TGCT': 25, 'THCA': 26, 'THYM': 27,
+    'UCEC': 28, 'UCS': 29, 'UVM': 30, 'BRCA': 31
+    }
 
 
 class argo_dataset(Dataset):
@@ -257,3 +259,43 @@ class argo_embedding(Dataset):
         dfs_delay = torch.FloatTensor(dfs_delay)
 
         return sample_id_embedding, dfs_event, dfs_delay
+
+
+class CancerDataset(Dataset):
+    def __init__(self, omics_paths, omics_types, clinical_data_path, index_data_path, fold, cancer_types=None):
+        # Check that the number of omics paths and types match
+        assert len(omics_paths) == len(omics_types), "Number of omics paths and types must match"
+
+        # Load omics data
+        self.omics = {omics_type: pd.read_csv(path) for omics_type, path in zip(omics_types, omics_paths)}
+
+        # Load clinical data
+        self.clinical_data = pd.read_csv(clinical_data_path)
+
+        # Load training data
+        train_data = pd.read_csv(index_data_path)
+
+        # If cancer_types is not specified, get all unique cancer types from the clinical data
+        if cancer_types is None:
+            cancer_types = self.clinical_data['Cancer_Type'].unique()
+            # print(cancer_types)
+
+        # Select data for the specified fold and cancer types
+        self.train_data = train_data[(train_data['Fold'] == fold) & (train_data['Cancer_Type'].isin(cancer_types))]
+
+    def __len__(self):
+        return len(self.train_data)
+
+    def __getitem__(self, idx):
+        # Get the index of the sample from the training data
+        sample_index = self.train_data.iloc[idx]['Sample_Index']
+
+        # Get omics data for this sample
+        omics_data = {omics_type: torch.Tensor(df.iloc[sample_index, 1:].values.tolist()) for omics_type, df in self.omics.items()}
+
+        # Get clinical data for this sample
+        OS = torch.Tensor(self.clinical_data.loc[sample_index, ['OS']])
+        OS_time = torch.Tensor(self.clinical_data.loc[sample_index, ['OS.time']]) / 30
+        cancer = self.clinical_data.loc[sample_index, ['Cancer_Type']].values.tolist()
+        cancer_type = torch.LongTensor(PanCancer[cancer[0]])
+        return OS, OS_time, omics_data, cancer_type

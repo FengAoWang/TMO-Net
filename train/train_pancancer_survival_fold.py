@@ -12,8 +12,7 @@ import time
 from tqdm import tqdm
 from util.loss_function import cox_loss, c_index
 from lifelines.utils import concordance_index
-
-
+import torch.multiprocessing as mp
 
 
 def set_seed(seed):
@@ -71,7 +70,7 @@ def train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omic
             pretrain_loss, _, _, _, _ = model.cross_encoders.compute_generate_loss(input_x, os_event.size(0))
             train_risk_score = torch.concat((train_risk_score, risk_score))
             CoxLoss = cox_loss(os_time, os_event, risk_score)
-            loss = CoxLoss + 0.1 * pretrain_loss
+            loss = CoxLoss + 0.2 * pretrain_loss
             total_loss += CoxLoss.item()
             optimizer.zero_grad()
             loss.backward()
@@ -105,7 +104,7 @@ def cal_c_index(dataloader, model, best_c_index, best_c_indices, omics):
         censors = torch.zeros((len(dataloader)))
         event_times = torch.zeros((len(dataloader)))
 
-        for i, data in enumerate(test_dataloader):
+        for i, data in enumerate(dataloader):
             os_time, os_event, omics_data = data
             input_x = [omics_data[key].cuda() for key in omics_data.keys()]
             os_event = os_event.cuda()
@@ -141,67 +140,84 @@ def cal_c_index(dataloader, model, best_c_index, best_c_indices, omics):
             best_c_index = c_indices['all']
             best_c_index_list = [c_indices[key] for key in c_indices.keys()]
 
-        print(f'{cancer} test survival c-index: ', c_indices)
+        print(f'test survival c-index: ', c_indices)
 
     return best_c_index_list, best_c_index
 
 
 omics_type = ['gex', 'mut', 'cnv']
-test_cancer = ['LGG', 'BRCA',  'LIHC', 'PAAD', 'LUSC', 'LUAD',  'BLCA',  'HNSC', 'KIRP',  'GBM', 'CESC',  'SARC', 'KIRC']
+test_cancer = ['LGG', 'SARC',  'BRCA',  'LIHC', 'PAAD', 'LUSC', 'LUAD',  'BLCA',  'HNSC', 'KIRP',  'GBM', 'CESC',  'KIRC']
 
-cancer_c_index = []
-fold = 1
+
+
 TCGA_file_path = '/home/wfa/project/clue/data/SurvBoard/TCGA/'
-model_path = '/home/wfa/project/clue/model/model_dict/all_pancancer_pretrain_model_fold0_dim64_latent_z.pt'
-task = {'output_dim': 1}
-fixed = False
-epochs = 1
-
-torch.cuda.set_device(0)
 omics = {'gex': 0, 'mut': 1, 'cnv': 2}
 omics_data_type = ['gaussian', 'gaussian', 'gaussian']
 
-for cancer in test_cancer:
-    print(f'{cancer} start training')
 
-    torch.cuda.empty_cache()
+def Survboard_Dataset_survival_prediction(fold, epochs, model_path, task, fixed, device_id):
+    cancer_c_index = []
+    for cancer in test_cancer:
+        print(f'{cancer} start training')
 
-    cancer_dataset = TCGA_Sur_Board(TCGA_file_path, cancer, omics_type)
-    torch.cuda.set_device(0)
+        torch.cuda.empty_cache()
 
-    print(f'-----start fold {fold} training-----')
+        cancer_dataset = TCGA_Sur_Board(TCGA_file_path, cancer, omics_type)
+        torch.cuda.set_device(device_id)
 
-    model = DownStream_predictor(3, [20531, 19687, 24776], 64, [4096, 1024, 512], model_path, task, omics_data_type, fixed)
-    model.cuda()
-    param_groups = [
-        {'params': model.cross_encoders.parameters(), 'lr': 0.00001},
-        {'params': model.downstream_predictor.parameters(), 'lr': 0.00001}
-    ]
+        print(f'-----start fold {fold} training-----')
 
-    optimizer = torch.optim.Adam(param_groups)
-    train_ids, test_ids = get_fold_ids(cancer, fold)
-    train_dataloader = DataLoader(cancer_dataset, sampler=train_ids, batch_size=32, drop_last=True)
-    test_dataloader = DataLoader(cancer_dataset, sampler=test_ids, batch_size=1)
+        model = DownStream_predictor(3, [20531, 19687, 24776], 64, [4096, 1024, 512],
+                                     model_path, task, omics_data_type, fixed)
+        model.cuda()
+        param_groups = [
+            {'params': model.cross_encoders.parameters(), 'lr': 0.00001},
+            {'params': model.downstream_predictor.parameters(), 'lr': 0.00001},
 
-    best_c_index = 0
-    best_c_indices = []
+        ]
 
-    for epoch in range(epochs):
-        # adjust_learning_rate(optimizer, epoch, 0.0001)
-        start_time = time.time()
-        train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omics)
-        best_c_indices, best_c_index = cal_c_index(test_dataloader, model, best_c_index, best_c_indices, omics)
-        print(f'{fold} time used: ', time.time() - start_time)
-    best_c_indices.insert(0, cancer)
-    cancer_c_index.append(best_c_indices)
+        optimizer = torch.optim.Adam(param_groups)
+        train_ids, test_ids = get_fold_ids(cancer, fold)
+        train_dataloader = DataLoader(cancer_dataset, sampler=train_ids, batch_size=32, drop_last=True)
+        test_dataloader = DataLoader(cancer_dataset, sampler=test_ids, batch_size=1)
+        best_c_index = 0
+        best_c_indices = []
 
-    del model
-    del optimizer
-    del train_dataloader
-    del test_dataloader
-    torch.cuda.empty_cache()
+        for epoch in range(epochs):
+            # adjust_learning_rate(optimizer, epoch, 0.0001)
+            start_time = time.time()
+            train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omics)
+            best_c_indices, best_c_index = cal_c_index(test_dataloader, model, best_c_index, best_c_indices, omics)
+            print(f'{fold} time used: ', time.time() - start_time)
+        best_c_indices.insert(0, cancer)
+        cancer_c_index.append(best_c_indices)
+
+        #   clean memory of gpu cuda
+        del model
+        del optimizer
+        del train_dataloader
+        del test_dataloader
+        torch.cuda.empty_cache()
+
+    print(cancer_c_index)
+    cancer_c_index = pd.DataFrame(cancer_c_index, columns=['cancer', f'{fold} multiomics', f'{fold} gex', f'{fold} mut', f'{fold} cnv', f'{fold} gex_cnv', f'{fold} gex_mut', f'{fold} cnv_mut'])
+    cancer_c_index.to_csv(f'all_pancancer_pretrain_cross_encoders_c_index_fold{fold}_all_omics.csv', encoding='utf-8')
 
 
-print(cancer_c_index)
-cancer_c_index = pd.DataFrame(cancer_c_index, columns=['cancer', f'{fold} multiomics', f'{fold} gex', f'{fold} mut', f'{fold} cnv', f'{fold} gex_cnv', f'{fold} gex_mut', f'{fold} cnv_mut'])
-cancer_c_index.to_csv(f'all_pancancer_pretrain_cross_encoders_c_index_fold{fold}_all_omics.csv', encoding='utf-8')
+task = {'output_dim': 1}
+fixed = False
+epochs = 20
+
+processes = []
+
+#   multiprocessing pretrain_fold
+device_ids = [0, 1, 2, 3, 4]
+for i in range(5):
+    model_path = f'/home/wfa/project/clue/model/model_dict/all_pancancer_pretrain_model_fold{i}_dim64_latent_z.pt'
+    p = mp.Process(target=Survboard_Dataset_survival_prediction, args=(i, epochs, model_path, task, fixed, device_ids[i]))
+    p.start()
+    processes.append(p)
+
+
+for p in processes:
+    p.join()

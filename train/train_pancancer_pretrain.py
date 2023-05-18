@@ -54,7 +54,7 @@ def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimi
             for key in omics_data.keys():
                 omic = omics_data[key]
                 omic = omic.cuda()
-                # print(omic.size())
+                # print(omic)
                 input_x.append(omic)
             un_dfs_freeze(model.discriminator)
             un_dfs_freeze(model.infer_discriminator)
@@ -148,56 +148,55 @@ def val_pretrain(test_dataloader, model, epoch, cancer):
     return Loss
 
 
-Pan_Cancer = ['PAAD', 'BLCA', 'GBM', 'CESC', 'LUSC', 'KIRP', 'LIHC', 'SARC', 'LGG', 'LUAD', 'KIRC', 'BRCA', 'HNSC']
+# Pan_Cancer = ['PAAD', 'BLCA', 'GBM', 'CESC', 'LUSC', 'KIRP', 'LIHC', 'SARC', 'LGG', 'LUAD', 'KIRC', 'BRCA', 'HNSC']
 
 # Pan_Cancer = ['BLCA']
-omics_type = ['gex', 'mut', 'cnv']
-omics_data = ['gaussian', 'gaussian', 'gaussian']
-fold = 0
-torch.cuda.set_device(5)
-model = Clue_model(3, [20531, 19687, 24776], 64, [4096, 1024, 512], omics_data)
-model.cuda()
-
-pretrain_dataset = []
-test_dataset = []
-for cancer in Pan_Cancer:
-    print(f'{cancer} data processing')
-    train_ids, test_ids = get_fold_ids(cancer, fold)
-    TCGA_file_path = '/home/wfa/project/clue/data/SurvBoard/TCGA/'
-    cancer_dataset = TCGA_Sur_Board(TCGA_file_path, cancer, omics_type, dataset_ids=train_ids)
-    test_cancer_dataset = TCGA_Sur_Board(TCGA_file_path, cancer, omics_type, dataset_ids=test_ids)
-
-    # print(cancer_dataset[1])
-    pretrain_dataset.append(cancer_dataset)
-    test_dataset.append(test_cancer_dataset)
-
-PanCancer_dataset = ConcatDataset(pretrain_dataset)
-test_PanCancer_dataset = ConcatDataset(test_dataset)
-
-print(len(PanCancer_dataset))
-epochs = 50
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-
-dsc_parameters = list(model.discriminator.parameters()) + list(model.infer_discriminator.parameters())
-dsc_optimizer = torch.optim.Adam(dsc_parameters, lr=0.0001)
-
-
-train_dataloader = DataLoader(PanCancer_dataset, batch_size=32)
-test_dataloader = DataLoader(test_PanCancer_dataset, batch_size=32)
-
-best_c_index = 0
-Loss_list = []
-test_Loss_list = []
-for epoch in range(epochs):
-    start_time = time.time()
-    Loss_list.append(train_pretrain(train_dataloader, model, epoch, 'PanCancer', optimizer, dsc_optimizer))
-    test_Loss_list.append(val_pretrain(test_dataloader, model, epoch, 'PanCancer'))
-    print(f'fold{fold} time used: ', time.time() - start_time)
-
-model_dict = model.state_dict()
-Loss_list = torch.Tensor(Loss_list)
-test_Loss_list = torch.Tensor(test_Loss_list)
-
-torch.save(test_Loss_list, f'../model/model_dict/all_pancancer_pretrain_test_loss_fold{fold}.pt')
-torch.save(Loss_list, f'../model/model_dict/all_pancancer_pretrain_train_loss_fold{fold}.pt')
-torch.save(model_dict, f'../model/model_dict/all_pancancer_pretrain_model_fold{fold}_dim64_latent_z.pt')
+# omics_type = ['gex', 'mut', 'cnv']
+# omics_data = ['gaussian', 'gaussian', 'gaussian']
+# fold = 0
+# torch.cuda.set_device(5)
+# model = Clue_model(3, [20531, 19687, 24776], 64, [4096, 1024, 512], omics_data)
+# model.cuda()
+#
+# pretrain_dataset = []
+# test_dataset = []
+# for cancer in Pan_Cancer:
+#     print(f'{cancer} data processing')
+#     train_ids, test_ids = get_fold_ids(cancer, fold)
+#     TCGA_file_path = '/home/wfa/project/clue/data/SurvBoard/TCGA/'
+#     cancer_dataset = TCGA_Sur_Board(TCGA_file_path, cancer, omics_type, dataset_ids=train_ids)
+#     test_cancer_dataset = TCGA_Sur_Board(TCGA_file_path, cancer, omics_type, dataset_ids=test_ids)
+#
+#     # print(cancer_dataset[1])
+#     pretrain_dataset.append(cancer_dataset)
+#     test_dataset.append(test_cancer_dataset)
+#
+# PanCancer_dataset = ConcatDataset(pretrain_dataset)
+# test_PanCancer_dataset = ConcatDataset(test_dataset)
+#
+# print(len(PanCancer_dataset))
+# epochs = 50
+# optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+#
+# dsc_parameters = list(model.discriminator.parameters()) + list(model.infer_discriminator.parameters())
+# dsc_optimizer = torch.optim.Adam(dsc_parameters, lr=0.0001)
+#
+#
+# train_dataloader = DataLoader(PanCancer_dataset, batch_size=32)
+# test_dataloader = DataLoader(test_PanCancer_dataset, batch_size=32)
+#
+# Loss_list = []
+# test_Loss_list = []
+# for epoch in range(epochs):
+#     start_time = time.time()
+#     Loss_list.append(train_pretrain(train_dataloader, model, epoch, 'PanCancer', optimizer, dsc_optimizer))
+#     test_Loss_list.append(val_pretrain(test_dataloader, model, epoch, 'PanCancer'))
+#     print(f'fold{fold} time used: ', time.time() - start_time)
+#
+# model_dict = model.state_dict()
+# Loss_list = torch.Tensor(Loss_list)
+# test_Loss_list = torch.Tensor(test_Loss_list)
+#
+# torch.save(test_Loss_list, f'../model/model_dict/all_pancancer_pretrain_test_loss_fold{fold}.pt')
+# torch.save(Loss_list, f'../model/model_dict/all_pancancer_pretrain_train_loss_fold{fold}.pt')
+# torch.save(model_dict, f'../model/model_dict/all_pancancer_pretrain_model_fold{fold}_dim64_latent_z.pt')

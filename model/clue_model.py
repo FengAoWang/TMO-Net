@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 from util.loss_function import KL_loss, reconstruction_loss, KL_divergence
+from functools import reduce
 
 
 def reparameterize(mean, logvar):
@@ -137,7 +138,7 @@ class Clue_model(nn.Module):
         self.k = modal_num
         self.encoders = nn.ModuleList(
             nn.ModuleList([encoder(modal_dim[i], latent_dim, hidden_dim) for j in range(self.k)]) for i in
-            range(len(modal_dim)))
+            range(self.k))
         self.self_decoders = nn.ModuleList([decoder(latent_dim, modal_dim[i], hidden_dim) for i in range(self.k)])
 
         self.cross_decoders = nn.ModuleList([decoder(latent_dim, modal_dim[i], hidden_dim) for i in range(self.k)])
@@ -167,10 +168,12 @@ class Clue_model(nn.Module):
 
     def forward(self, input_x, batch_size):
         output = [[self.encoders[i][j](input_x[i]) for j in range(len(input_x))] for i in range(len(input_x))]
-        return output
+        share_representation = self.share_representation(output)
+        return output, share_representation
 
     def compute_generate_loss(self, input_x, batch_size):
         output = [[self.encoders[i][j](input_x[i]) for j in range(len(input_x))] for i in range(len(input_x))]
+
         self_elbo = self.self_elbo([output[i][i] for i in range(len(input_x))], input_x)
         cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size)
         cross_infer_loss = self.cross_infer_loss(output)
@@ -270,6 +273,112 @@ class Clue_model(nn.Module):
         return embedding_tensor
 
 
+class LMF_fusion(nn.Module):
+    def __init__(self, input_dim, ranks, modal_nums):
+        super(LMF_fusion, self).__init__()
+        self.input_dim = input_dim
+        self.ranks = ranks
+        self.k = modal_nums
+
+        self.rank_weights = nn.ParameterList((nn.Parameter(torch.Tensor(self.ranks, self.input_dim, self.input_dim),
+                                                           requires_grad=True)) for i in range(self.k))
+        self.fusion_weights = nn.Parameter(torch.Tensor(1, self.ranks), requires_grad=True)
+        self.fusion_bias = nn.Parameter(torch.Tensor(1, self.input_dim), requires_grad=True)
+
+        for i in range(self.k):
+            nn.init.xavier_normal(self.rank_weights[i])
+        nn.init.xavier_normal(self.fusion_weights)
+
+    def forward(self, input_x):
+
+        fusion_features = [torch.matmul(input_x[i], self.rank_weights[i]) for i in range(self.k)]
+        fusion_features = reduce(torch.mul, fusion_features)
+        fusion_features = fusion_features.permute(1, 0, 2).squeeze()
+        output = torch.matmul(self.fusion_weights, fusion_features)
+        output = output.view(-1, self.input_dim)
+        return output
+
+
+class LMF(nn.Module):
+    '''
+    Low-rank Multimodal Fusion
+    '''
+
+    def __init__(self, input_dims, rank, use_softmax=False):
+        '''
+        Args:
+            input_dims - a length-3 tuple, contains (audio_dim, video_dim, text_dim)
+            hidden_dims - another length-3 tuple, hidden dims of the sub-networks
+            text_out - int, specifying the resulting dimensions of the text subnetwork
+            dropouts - a length-4 tuple, contains (audio_dropout, video_dropout, text_dropout, post_fusion_dropout)
+            output_dim - int, specifying the size of output
+            rank - int, specifying the size of rank in LMF
+        Output:
+            (return value in forward) a scalar value between -3 and 3
+        '''
+        super(LMF, self).__init__()
+
+        # dimensions are specified in the order of audio, video and text
+        self.audio_in = input_dims
+        self.video_in = input_dims
+        self.text_in = input_dims
+
+        self.output_dim = input_dims
+        self.rank = rank
+        self.use_softmax = use_softmax
+
+        # self.post_fusion_layer_1 = nn.Linear((self.text_out + 1) * (self.video_hidden + 1) * (self.audio_hidden + 1), self.post_fusion_dim)
+        self.audio_factor = nn.Parameter(torch.Tensor(self.rank, self.audio_in + 1, self.output_dim))
+        self.video_factor = nn.Parameter(torch.Tensor(self.rank, self.video_in + 1, self.output_dim))
+        self.text_factor = nn.Parameter(torch.Tensor(self.rank, self.text_in + 1, self.output_dim))
+        self.fusion_weights = nn.Parameter(torch.Tensor(1, self.rank))
+        self.fusion_bias = nn.Parameter(torch.Tensor(1, self.output_dim))
+
+        # init teh factors
+        nn.init.xavier_normal(self.audio_factor)
+        nn.init.xavier_normal(self.video_factor)
+        nn.init.xavier_normal(self.text_factor)
+        nn.init.xavier_normal(self.fusion_weights)
+        self.fusion_bias.data.fill_(0)
+
+    def forward(self, audio_x, video_x, text_x):
+        '''
+        Args:
+            audio_x: tensor of shape (batch_size, audio_in)
+            video_x: tensor of shape (batch_size, video_in)
+            text_x: tensor of shape (batch_size, sequence_len, text_in)
+        '''
+        audio_h = audio_x
+        video_h = video_x
+        text_h = text_x
+        batch_size = audio_h.data.shape[0]
+
+        # next we perform low-rank multimodal fusion
+        # here is a more efficient implementation than the one the paper describes
+        # basically swapping the order of summation and elementwise product
+        if audio_h.is_cuda:
+            DTYPE = torch.cuda.FloatTensor
+        else:
+            DTYPE = torch.FloatTensor
+
+        _audio_h = torch.cat((torch.ones(batch_size, 1).type(DTYPE), audio_h), dim=1)
+        _video_h = torch.cat((torch.ones(batch_size, 1).type(DTYPE), video_h), dim=1)
+        _text_h = torch.cat((torch.ones(batch_size, 1).type(DTYPE), text_h), dim=1)
+
+        fusion_audio = torch.matmul(_audio_h, self.audio_factor)
+        fusion_video = torch.matmul(_video_h, self.video_factor)
+        fusion_text = torch.matmul(_text_h, self.text_factor)
+        fusion_zy = fusion_audio * fusion_video * fusion_text
+
+        # output = torch.sum(fusion_zy, dim=0).squeeze()
+        # use linear transformation instead of simple summation, more flexibility
+        output = torch.matmul(self.fusion_weights, fusion_zy.permute(1, 0, 2)).squeeze() + self.fusion_bias
+        output = output.view(-1, self.output_dim)
+        if self.use_softmax:
+            output = F.softmax(output)
+        return output
+
+
 class DownStream_predictor(nn.Module):
     def __init__(self, modal_num, modal_dim, latent_dim, hidden_dim, pretrain_model_path, task, omics_data, fixed):
         super(DownStream_predictor, self).__init__()
@@ -281,12 +390,14 @@ class DownStream_predictor(nn.Module):
             model_pretrain_dict = torch.load(pretrain_model_path, map_location='cpu')
             self.cross_encoders.load_state_dict(model_pretrain_dict)
         #   分类器
-        self.downstream_predictor = nn.Sequential(nn.Linear(latent_dim * self.k, 32),
+        # self.lmf = LMF(64, 16)
+        self.lmf_fusion = LMF_fusion(64, 16, 3)
+        self.downstream_predictor = nn.Sequential(nn.Linear(latent_dim * 2, 32),
                                                   nn.BatchNorm1d(32),
                                                   nn.ReLU(),
                                                   nn.Linear(32, task['output_dim']))
 
-        self.weights = nn.Parameter(torch.rand(self.k), requires_grad=True)
+        # self.weights = nn.Parameter(torch.ones(self.k), requires_grad=True)
 
         if fixed:
             print('fix cross encoders')
@@ -295,32 +406,13 @@ class DownStream_predictor(nn.Module):
     def un_dfs_freeze_encoder(self):
         un_dfs_freeze(self.cross_encoders)
 
-    # omics dict, 标注输入的数据
-
-    def forward(self, input_x, batch_size, omics):
-        output = self.cross_encoders(input_x, batch_size)
-        embedding_tensor = torch.Tensor([]).cuda()
+    #   return embedding
+    def get_embedding(self, input_x, batch_size, omics):
+        output, share_representation = self.cross_encoders(input_x, batch_size)
+        embedding_tensor = []
         keys = list(omics.keys())
-        non_negative_weights = F.relu(self.weights)
-        normalized_non_negative_weights = non_negative_weights / non_negative_weights.sum()
-
-        # for i in range(self.k):
-        #     mean_mu = []
-        #     for j in keys:
-        #         _, mu, _ = output[omics[j]][i]
-        #         mean_mu.append(mu)
-        #     mean_mu = sum(mean_mu)
-        #     mu_set = []
-        #     log_var_set = []
-        #     for j in range(len(omics)):
-        #         latent_z, mu, log_var = output[omics[keys[j]]][i]
-        #         mu_set.append(mu)
-        #         log_var_set.append(log_var)
-        #     poe_mu, poe_log_var = product_of_experts(mu_set, log_var_set)
-        #     poe_latent_z = reparameterize(poe_mu, poe_log_var)
-        #
-        #     embedding_tensor.append(normalized_non_negative_weights[i] * mean_mu)
-        # embedding_tensor = sum(embedding_tensor)
+        share_features = [share_representation[omics[key]] for key in keys]
+        share_features = sum(share_features) / len(keys)
         for i in range(self.k):
             mu_set = []
             log_var_set = []
@@ -330,9 +422,42 @@ class DownStream_predictor(nn.Module):
                 log_var_set.append(log_var)
             poe_mu, poe_log_var = product_of_experts(mu_set, log_var_set)
             poe_latent_z = reparameterize(poe_mu, poe_log_var)
-            embedding_tensor = torch.concat((embedding_tensor, normalized_non_negative_weights[i] * poe_mu), dim=1)
 
-        downstream_output = self.downstream_predictor(embedding_tensor)
+            embedding_tensor.append(poe_mu)
+        embedding_tensor = self.lmf_fusion(embedding_tensor)
+        # multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
+        return embedding_tensor
+
+    # omics dict, 标注输入的数据
+    def forward(self, input_x, batch_size, omics):
+        output, share_representation = self.cross_encoders(input_x, batch_size)
+
+        embedding_tensor = []
+        keys = list(omics.keys())
+
+        # non_negative_weights = F.relu(self.weights)
+        # normalized_non_negative_weights = non_negative_weights / non_negative_weights.sum()
+
+        share_features = [share_representation[omics[key]] for key in keys]
+        share_features = sum(share_features) / len(keys)
+        for i in range(self.k):
+            mu_set = []
+            log_var_set = []
+            for j in range(len(omics)):
+                latent_z, mu, log_var = output[omics[keys[j]]][i]
+                mu_set.append(mu)
+                log_var_set.append(log_var)
+            poe_mu, poe_log_var = product_of_experts(mu_set, log_var_set)
+            poe_latent_z = reparameterize(poe_mu, poe_log_var)
+
+            embedding_tensor.append(poe_mu)
+        embedding_tensor = self.lmf_fusion(embedding_tensor)
+        # embedding_tensor = self.lmf(embedding_tensor[0], embedding_tensor[1], embedding_tensor[2])
+        # embedding_tensor = sum(embedding_tensor)
+
+        multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
+        downstream_output = self.downstream_predictor(multi_representation)
+
         return downstream_output
 
 
@@ -388,4 +513,3 @@ class PanCancer_SNN_predictor(nn.Module):
             embedding_tensor = torch.concat((embedding_tensor, embedding), dim=1)
         output = self.predictor(embedding_tensor)
         return output
-
