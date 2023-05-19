@@ -297,5 +297,7 @@ class CancerDataset(Dataset):
         OS = torch.Tensor(self.clinical_data.loc[sample_index, ['OS']])
         OS_time = torch.Tensor(self.clinical_data.loc[sample_index, ['OS.time']]) / 30
         cancer = self.clinical_data.loc[sample_index, ['Cancer_Type']].values.tolist()
-        cancer_type = torch.LongTensor(PanCancer[cancer[0]])
+        cancer_type = torch.LongTensor([PanCancer[cancer[0]]])
+        # print(cancer_type)
+
         return OS, OS_time, omics_data, cancer_type

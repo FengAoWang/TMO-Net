@@ -391,11 +391,11 @@ class DownStream_predictor(nn.Module):
             self.cross_encoders.load_state_dict(model_pretrain_dict)
         #   分类器
         # self.lmf = LMF(64, 16)
-        self.lmf_fusion = LMF_fusion(64, 16, 3)
-        self.downstream_predictor = nn.Sequential(nn.Linear(latent_dim * 2, 32),
-                                                  nn.BatchNorm1d(32),
+        self.lmf_fusion = LMF_fusion(64, 16, 4)
+        self.downstream_predictor = nn.Sequential(nn.Linear(latent_dim * 2, 64),
+                                                  nn.BatchNorm1d(64),
                                                   nn.ReLU(),
-                                                  nn.Linear(32, task['output_dim']))
+                                                  nn.Linear(64, task['output_dim']))
 
         # self.weights = nn.Parameter(torch.ones(self.k), requires_grad=True)
 
@@ -425,8 +425,8 @@ class DownStream_predictor(nn.Module):
 
             embedding_tensor.append(poe_mu)
         embedding_tensor = self.lmf_fusion(embedding_tensor)
-        # multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
-        return embedding_tensor
+        multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
+        return multi_representation
 
     # omics dict, 标注输入的数据
     def forward(self, input_x, batch_size, omics):
