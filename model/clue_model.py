@@ -45,24 +45,30 @@ class encoder(nn.Module):
         super(encoder, self).__init__()
         self.encoder = nn.Sequential(nn.Linear(input_dim, hidden_dim[0]),
                                      nn.BatchNorm1d(hidden_dim[0]),
+                                     # nn.Dropout(0.2),
                                      nn.ReLU(),
 
                                      nn.Linear(hidden_dim[0], hidden_dim[1]),
                                      nn.BatchNorm1d(hidden_dim[1]),
+                                     # nn.Dropout(0.2),
                                      nn.ReLU(),
 
                                      nn.Linear(hidden_dim[1], hidden_dim[2]),
                                      nn.BatchNorm1d(hidden_dim[2]),
+                                     # nn.Dropout(0.2),
                                      nn.ReLU(),
 
                                      nn.Linear(hidden_dim[2], latent_dim),
                                      nn.BatchNorm1d(latent_dim),
+                                     # nn.Dropout(0.2),
                                      nn.ReLU())
 
         self.mu_predictor = nn.Sequential(nn.Linear(latent_dim, latent_dim),
-                                          nn.ReLU())
+                                          nn.ReLU()
+                                          )
         self.log_var_predictor = nn.Sequential(nn.Linear(latent_dim, latent_dim),
-                                               nn.ReLU())
+                                               nn.ReLU()
+                                               )
 
     @staticmethod
     def reparameterize(mean, logvar):
@@ -88,47 +94,24 @@ class decoder(nn.Module):
         super(decoder, self).__init__()
         self.decoder = nn.Sequential(nn.Linear(latent_dim, hidden_dim[2]),
                                      nn.BatchNorm1d(hidden_dim[2]),
+                                     # nn.Dropout(0.2),
                                      nn.ReLU(),
 
                                      nn.Linear(hidden_dim[2], hidden_dim[1]),
                                      nn.BatchNorm1d(hidden_dim[1]),
+                                     # nn.Dropout(0.2),
                                      nn.ReLU(),
 
                                      nn.Linear(hidden_dim[1], hidden_dim[0]),
                                      nn.BatchNorm1d(hidden_dim[0]),
+                                     # nn.Dropout(0.2),
                                      nn.ReLU(),
 
                                      nn.Linear(hidden_dim[0], input_dim),
-                                     nn.ReLU())
+                                     )
 
     def forward(self, latent_z):
         return self.decoder(latent_z)
-
-
-class cross_encoder(nn.Module):
-    def __init__(self, latent_dim):
-        super(cross_encoder, self).__init__()
-        self.cross_encoder = nn.Sequential(nn.Linear(latent_dim, latent_dim),
-                                           nn.ReLU())
-
-        self.cross_mu_predictor = nn.Sequential(nn.Linear(latent_dim, latent_dim),
-                                                nn.ReLU())
-
-        self.cross_log_var_predictor = nn.Sequential(nn.Linear(latent_dim, latent_dim),
-                                                     nn.ReLU())
-
-    @staticmethod
-    def reparameterize(mean, logvar):
-        std = torch.exp(logvar / 2)
-        epsilon = torch.randn_like(std).cuda()
-        return epsilon * std + mean
-
-    def forward(self, x):
-        x = self.cross_encoder(x)
-        mu = self.cross_mu_predictor(x)
-        log_var = self.cross_log_var_predictor(x)
-        latent_z = self.reparameterize(mu, log_var)
-        return (latent_z, mu, log_var)
 
 
 class Clue_model(nn.Module):
@@ -162,6 +145,8 @@ class Clue_model(nn.Module):
         #   loss function hyperparameter
         self.loss_weight = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], requires_grad=True)
 
+        self.lmf_fusion = LMF_fusion(64, 16, 4)
+
         self.omics_data = omics_data
         if pretrain:
             dfs_freeze(self.encoders)
@@ -169,6 +154,7 @@ class Clue_model(nn.Module):
     def forward(self, input_x, batch_size):
         output = [[self.encoders[i][j](input_x[i]) for j in range(len(input_x))] for i in range(len(input_x))]
         share_representation = self.share_representation(output)
+
         return output, share_representation
 
     def compute_generate_loss(self, input_x, batch_size):
@@ -179,6 +165,7 @@ class Clue_model(nn.Module):
         cross_infer_loss = self.cross_infer_loss(output)
         dsc_loss = self.adversarial_loss(batch_size, output)
         generate_loss = self_elbo + cross_elbo + cross_infer_loss * cross_infer_loss - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
+        # generate_loss = self_elbo
         return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss
 
     def compute_dsc_loss(self, input_x, batch_size):
@@ -197,7 +184,7 @@ class Clue_model(nn.Module):
         for i in range(self.k):
             latent_z, mu, log_var = input_x[i]
             reconstruct_omic = self.self_decoders[i](latent_z)
-            self_vae_elbo += KL_loss(mu, log_var, 1.0) + reconstruction_loss(input_omic[i], reconstruct_omic, 1.0,
+            self_vae_elbo += 0.01 * KL_loss(mu, log_var, 1.0) + reconstruction_loss(input_omic[i], reconstruct_omic, 1.0,
                                                                              self.omics_data[i])
         return self_vae_elbo
 
@@ -220,7 +207,7 @@ class Clue_model(nn.Module):
             poe_latent_z = reparameterize(poe_mu, poe_log_var)
             reconstruct_omic = self.self_decoders[i](poe_latent_z)
 
-            cross_elbo += KL_loss(poe_mu, poe_log_var, 1.0) + reconstruction_loss(input_omic[i], reconstruct_omic, 1.0,
+            cross_elbo += 0.01 * KL_loss(poe_mu, poe_log_var, 1.0) + reconstruction_loss(input_omic[i], reconstruct_omic, 1.0,
                                                                                   self.omics_data[i])
             cross_infer_loss += reconstruction_loss(real_mu, poe_mu, 1.0, 'gaussian')
 
@@ -235,7 +222,7 @@ class Clue_model(nn.Module):
             cross_modal_dsc_loss += F.cross_entropy(pred_infer_modal, infer_modal, reduction='none')
 
         cross_modal_dsc_loss = cross_modal_dsc_loss.sum(0) / (self.k * batch_size)
-        return cross_elbo + cross_infer_loss + cross_modal_KL_loss, cross_modal_dsc_loss
+        return cross_elbo + cross_infer_loss + 0.01 * cross_modal_KL_loss, cross_modal_dsc_loss
 
     def cross_infer_loss(self, input_x):
         latent_mu = [input_x[i][i][1] for i in range(len(input_x))]
@@ -271,6 +258,54 @@ class Clue_model(nn.Module):
             embedding_list.append(mu)
         embedding_tensor = torch.cat(embedding_list, dim=1)
         return embedding_tensor
+
+    def get_embedding(self, input_x, batch_size, omics):
+        output, share_representation = self.forward(input_x, batch_size)
+        embedding_tensor = []
+        keys = list(omics.keys())
+        share_features = [share_representation[omics[key]] for key in keys]
+        share_features = sum(share_features) / len(keys)
+
+        for i in range(self.k):
+            mu_set = []
+            log_var_set = []
+            for j in range(len(omics)):
+                latent_z, mu, log_var = output[omics[keys[j]]][i]
+                if i != j:
+                    mu_set.append(mu)
+                    log_var_set.append(log_var)
+            poe_mu, poe_log_var = product_of_experts(mu_set, log_var_set)
+            _, omic_mu, omic_log_var = output[i][i]
+            poe_latent_z = reparameterize(poe_mu, poe_log_var)
+            joint_mu = (omic_mu + poe_mu) / 2
+
+            embedding_tensor.append(joint_mu)
+
+        # embedding_tensor = self.lmf_fusion(embedding_tensor)
+        embedding_tensor = torch.cat(embedding_tensor, dim=1)
+        multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
+        return multi_representation
+
+    @staticmethod
+    def contrastive_loss(embeddings, labels, margin=1.0, distance='cosine'):
+
+        if distance == 'euclidean':
+            distances = torch.cdist(embeddings, embeddings)
+        elif distance == 'cosine':
+            normed_embeddings = F.normalize(embeddings, p=2, dim=1)
+            distances = 1 - torch.mm(normed_embeddings, normed_embeddings.transpose(0, 1))
+        else:
+            raise ValueError(f"Unknown distance type: {distance}")
+
+        labels_matrix = labels.view(-1, 1) == labels.view(1, -1)
+
+        positive_pair_distances = distances * labels_matrix.float()
+        negative_pair_distances = distances * (1 - labels_matrix.float())
+
+        positive_loss = positive_pair_distances.sum() / labels_matrix.float().sum()
+        negative_loss = F.relu(margin - negative_pair_distances).sum() / (1 - labels_matrix.float()).sum()
+
+        return positive_loss + negative_loss
 
 
 class LMF_fusion(nn.Module):
@@ -391,10 +426,17 @@ class DownStream_predictor(nn.Module):
             self.cross_encoders.load_state_dict(model_pretrain_dict)
         #   分类器
         # self.lmf = LMF(64, 16)
-        self.lmf_fusion = LMF_fusion(64, 16, 4)
-        self.downstream_predictor = nn.Sequential(nn.Linear(latent_dim * 2, 64),
-                                                  nn.BatchNorm1d(64),
+        self.lmf_fusion = LMF_fusion(64, 16, self.k)
+        self.downstream_predictor = nn.Sequential(nn.Linear(latent_dim * (self.k + 1), 128),
+                                                  nn.BatchNorm1d(128),
+                                                  nn.Dropout(0.2),
                                                   nn.ReLU(),
+
+                                                  nn.Linear(128, 64),
+                                                  nn.BatchNorm1d(64),
+                                                  nn.Dropout(0.2),
+                                                  nn.ReLU(),
+
                                                   nn.Linear(64, task['output_dim']))
 
         # self.weights = nn.Parameter(torch.ones(self.k), requires_grad=True)
@@ -430,32 +472,7 @@ class DownStream_predictor(nn.Module):
 
     # omics dict, 标注输入的数据
     def forward(self, input_x, batch_size, omics):
-        output, share_representation = self.cross_encoders(input_x, batch_size)
-
-        embedding_tensor = []
-        keys = list(omics.keys())
-
-        # non_negative_weights = F.relu(self.weights)
-        # normalized_non_negative_weights = non_negative_weights / non_negative_weights.sum()
-
-        share_features = [share_representation[omics[key]] for key in keys]
-        share_features = sum(share_features) / len(keys)
-        for i in range(self.k):
-            mu_set = []
-            log_var_set = []
-            for j in range(len(omics)):
-                latent_z, mu, log_var = output[omics[keys[j]]][i]
-                mu_set.append(mu)
-                log_var_set.append(log_var)
-            poe_mu, poe_log_var = product_of_experts(mu_set, log_var_set)
-            poe_latent_z = reparameterize(poe_mu, poe_log_var)
-
-            embedding_tensor.append(poe_mu)
-        embedding_tensor = self.lmf_fusion(embedding_tensor)
-        # embedding_tensor = self.lmf(embedding_tensor[0], embedding_tensor[1], embedding_tensor[2])
-        # embedding_tensor = sum(embedding_tensor)
-
-        multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
+        multi_representation = self.cross_encoders.get_embedding(input_x, batch_size, omics)
         downstream_output = self.downstream_predictor(multi_representation)
 
         return downstream_output

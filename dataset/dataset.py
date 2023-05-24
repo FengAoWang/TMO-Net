@@ -288,16 +288,16 @@ class CancerDataset(Dataset):
 
     def __getitem__(self, idx):
         # Get the index of the sample from the training data
-        sample_index = self.train_data.iloc[idx]['Sample_Index']
+        sample_id = self.train_data.iloc[idx]['Sample_ID']
 
         # Get omics data for this sample
-        omics_data = {omics_type: torch.Tensor(df.iloc[sample_index, 1:].values.tolist()) for omics_type, df in self.omics.items()}
+        omics_data = {omics_type: torch.Tensor(df[df['ID'] == sample_id].values.tolist()[0][1:]) for omics_type, df in self.omics.items()}
 
         # Get clinical data for this sample
-        OS = torch.Tensor(self.clinical_data.loc[sample_index, ['OS']])
-        OS_time = torch.Tensor(self.clinical_data.loc[sample_index, ['OS.time']]) / 30
-        cancer = self.clinical_data.loc[sample_index, ['Cancer_Type']].values.tolist()
+        sample_clinical_data = self.clinical_data[self.clinical_data['ID'] == sample_id]
+        OS = torch.Tensor(sample_clinical_data['OS'].values)
+        OS_time = torch.Tensor(sample_clinical_data['OS.time'].values) / 30
+        cancer = sample_clinical_data['Cancer_Type'].values.tolist()
         cancer_type = torch.LongTensor([PanCancer[cancer[0]]])
-        # print(cancer_type)
 
         return OS, OS_time, omics_data, cancer_type
