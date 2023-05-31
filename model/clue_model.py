@@ -151,9 +151,15 @@ class Clue_model(nn.Module):
         if pretrain:
             dfs_freeze(self.encoders)
 
-    def forward(self, input_x, batch_size):
-        output = [[self.encoders[i][j](input_x[i]) for j in range(len(input_x))] for i in range(len(input_x))]
-        share_representation = self.share_representation(output)
+    #   incomplete omics input
+    def forward(self, input_x, omics):
+        keys = omics.keys()
+        values = omics.values()
+        output = [[0 for i in range(self.k)] for j in range(self.k)]
+        for (item, i) in enumerate(values):
+            for j in range(self.k):
+                output[i][j] = self.encoders[i][j](input_x[item])
+        share_representation = self.share_representation(output, omics)
 
         return output, share_representation
 
@@ -174,8 +180,9 @@ class Clue_model(nn.Module):
         dsc_loss = self.adversarial_loss(batch_size, output)
         return cross_infer_dsc_loss, dsc_loss
 
-    def share_representation(self, output):
-        share_features = [self.share_encoder(output[i][i][1]) for i in range(self.k)]
+    def share_representation(self, output, omics):
+        values = omics.values()
+        share_features = [self.share_encoder(output[i][i][1]) for i in values]
         return share_features
 
     def self_elbo(self, input_x, input_omic):
@@ -260,28 +267,28 @@ class Clue_model(nn.Module):
         return embedding_tensor
 
     def get_embedding(self, input_x, batch_size, omics):
-        output, share_representation = self.forward(input_x, batch_size)
+        output, share_representation = self.forward(input_x, omics)
         embedding_tensor = []
         keys = list(omics.keys())
-        share_features = [share_representation[omics[key]] for key in keys]
-        share_features = sum(share_features) / len(keys)
+        values = list(omics.values())
+        share_features = sum(share_representation) / len(keys)
 
         for i in range(self.k):
             mu_set = []
             log_var_set = []
-            for j in range(len(omics)):
-                latent_z, mu, log_var = output[omics[keys[j]]][i]
-                if i != j:
+            for j in range(self.k):
+                if (i != j) and (j in values):
+                    latent_z, mu, log_var = output[j][i]
                     mu_set.append(mu)
                     log_var_set.append(log_var)
             poe_mu, poe_log_var = product_of_experts(mu_set, log_var_set)
-            _, omic_mu, omic_log_var = output[i][i]
-            poe_latent_z = reparameterize(poe_mu, poe_log_var)
-            joint_mu = (omic_mu + poe_mu) / 2
-
+            if i in values:
+                _, omic_mu, omic_log_var = output[i][i]
+                joint_mu = (omic_mu + poe_mu) / 2
+            else:
+                joint_mu = poe_mu
             embedding_tensor.append(joint_mu)
 
-        # embedding_tensor = self.lmf_fusion(embedding_tensor)
         embedding_tensor = torch.cat(embedding_tensor, dim=1)
         multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
         return multi_representation
@@ -438,8 +445,6 @@ class DownStream_predictor(nn.Module):
                                                   nn.ReLU(),
 
                                                   nn.Linear(64, task['output_dim']))
-
-        # self.weights = nn.Parameter(torch.ones(self.k), requires_grad=True)
 
         if fixed:
             print('fix cross encoders')
