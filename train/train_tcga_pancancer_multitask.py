@@ -52,10 +52,11 @@ omics_data_type = ['gaussian', 'gaussian', 'gaussian', 'gaussian']
 # omics_data_type = ['bernoulli', 'bernoulli', 'bernoulli', 'bernoulli']
 
 omics = {'gex': 0, 'methy': 1, 'mut': 2, 'cna': 3}
-# omics = {'gex': 0, 'methy': 1}
+incomplete_omics = {'gex': 0, 'methy': 1}
+
 
 #   pretrain
-def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimizer, fold):
+def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimizer, fold, pretrain_omics):
     model.train()
     # model = model.state_dict()
     print(f'-----start epoch {epoch} training-----')
@@ -73,7 +74,7 @@ def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimi
     with tqdm(train_dataloader, unit='batch') as tepoch:
         for batch, data in enumerate(tepoch):
             tepoch.set_description(f" Epoch {epoch}: ")
-            os_time, os_event, omics_data, cancer_label = data
+            os_event, os_time,  omics_data, cancer_label = data
             cancer_label = cancer_label.cuda()
             cancer_label = cancer_label.squeeze()
             all_label = torch.concat((all_label, cancer_label), dim=0)
@@ -86,7 +87,7 @@ def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimi
                 input_x.append(omic)
             un_dfs_freeze(model.discriminator)
             un_dfs_freeze(model.infer_discriminator)
-            cross_infer_dsc_loss, dsc_loss = model.compute_dsc_loss(input_x, os_event.size(0))
+            cross_infer_dsc_loss, dsc_loss = model.compute_dsc_loss(input_x, os_event.size(0), pretrain_omics)
             ad_loss = cross_infer_dsc_loss + dsc_loss
             total_ad_loss += dsc_loss.item()
 
@@ -96,13 +97,12 @@ def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimi
 
             dfs_freeze(model.discriminator)
             dfs_freeze(model.infer_discriminator)
-            loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss = model.compute_generate_loss(input_x,
-                                                                                                  os_event.size(0))
+            loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss = model.compute_generate_loss(input_x, os_event.size(0), pretrain_omics)
 
             total_self_elbo += self_elbo.item()
             total_cross_elbo += cross_elbo.item()
             total_cross_infer_loss += cross_infer_loss.item()
-            multi_embedding = model.get_embedding(input_x, os_event.size(0), omics)
+            multi_embedding = model.get_embedding(input_x, os_event.size(0), pretrain_omics)
 
             pancancer_embedding = torch.concat((pancancer_embedding, multi_embedding), dim=0)
             contrastive_loss = model.contrastive_loss(multi_embedding, cancer_label)
@@ -128,15 +128,15 @@ def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimi
         print('dsc loss', total_dsc_loss / len(train_dataloader))
         Loss.append(total_dsc_loss / len(train_dataloader))
 
-        torch.save(pancancer_embedding, f'../model/model_dict/TCGA_pancancer_multi_train_embedding_fold{fold}_epoch{epoch}.pt')
-        torch.save(all_label, f'../model/model_dict/TCGA_pancancer_train_fold{fold}_epoch{epoch}_all_label.pt')
+        torch.save(pancancer_embedding, f'../model/model_dict/TCGA_pancancer_multi_train_embedding_fold{fold}_epoch{epoch}_v2.pt')
+        torch.save(all_label, f'../model/model_dict/TCGA_pancancer_train_fold{fold}_epoch{epoch}_all_label_v2.pt')
 
         pretrain_score = logme.fit(pancancer_embedding.detach().cpu().numpy(), all_label.cpu().numpy())
         print('pretrain score:', pretrain_score)
-        return Loss
+        return Loss, pretrain_score
 
 
-def val_pretrain(test_dataloader, model, epoch, cancer, fold):
+def val_pretrain(test_dataloader, model, epoch, cancer, fold, pretrain_omics):
     model.eval()
     # model = model.state_dict()
     print(f'-----start epoch {epoch} val-----')
@@ -153,7 +153,7 @@ def val_pretrain(test_dataloader, model, epoch, cancer, fold):
         with tqdm(test_dataloader, unit='batch') as tepoch:
             for batch, data in enumerate(tepoch):
                 tepoch.set_description(f" Epoch {epoch}: ")
-                os_time, os_event, omics_data, cancer_label = data
+                os_event, os_time, omics_data, cancer_label = data
                 cancer_label = cancer_label.cuda()
                 cancer_label = cancer_label.squeeze()
                 all_label = torch.concat((all_label, cancer_label), dim=0)
@@ -164,13 +164,12 @@ def val_pretrain(test_dataloader, model, epoch, cancer, fold):
                     # print(omic.size())
                     input_x.append(omic)
 
-                cross_infer_dsc_loss, dsc_loss = model.compute_dsc_loss(input_x, os_event.size(0))
+                cross_infer_dsc_loss, dsc_loss = model.compute_dsc_loss(input_x, os_event.size(0), pretrain_omics)
 
                 total_cross_infer_dsc_loss += cross_infer_dsc_loss.item()
 
-                loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss = model.compute_generate_loss(input_x,
-                                                                                                      os_event.size(0))
-                multi_embedding = model.get_embedding(input_x, os_event.size(0), omics)
+                loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss = model.compute_generate_loss(input_x, os_event.size(0), pretrain_omics)
+                multi_embedding = model.get_embedding(input_x, os_event.size(0), pretrain_omics)
 
                 pancancer_embedding = torch.concat((pancancer_embedding, multi_embedding), dim=0)
                 total_self_elbo += self_elbo.item()
@@ -194,8 +193,8 @@ def val_pretrain(test_dataloader, model, epoch, cancer, fold):
             print('test dsc loss', total_dsc_loss / len(test_dataloader))
             Loss.append(total_dsc_loss / len(test_dataloader))
             torch.save(pancancer_embedding,
-                       f'../model/model_dict/TCGA_pancancer_multi_test_embedding_fold{fold}_epoch{epoch}.pt')
-            torch.save(all_label, f'../model/model_dict/TCGA_pancancer_test_fold{fold}_epoch{epoch}_all_label.pt')
+                       f'../model/model_dict/TCGA_pancancer_multi_test_embedding_fold{fold}_epoch{epoch}_v2.pt')
+            torch.save(all_label, f'../model/model_dict/TCGA_pancancer_test_fold{fold}_epoch{epoch}_all_label_v2.pt')
     return Loss
 
 
@@ -211,28 +210,32 @@ def TCGA_Dataset_pretrain(fold, epochs, device_id, cancer_types=None):
     torch.cuda.set_device(device_id)
     model.cuda()
     print(len(train_dataset))
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.00001)
 
     dsc_parameters = list(model.discriminator.parameters()) + list(model.infer_discriminator.parameters())
     dsc_optimizer = torch.optim.Adam(dsc_parameters, lr=0.0001)
 
     Loss_list = []
     test_Loss_list = []
+    pretrain_score_list = []
     for epoch in range(epochs):
 
         start_time = time.time()
         # if epoch > 7:
         #     for param_group in optimizer.param_groups:
         #         param_group['lr'] = 0.000001
-        Loss_list.append(train_pretrain(train_dataloader, model, epoch, 'PanCancer', optimizer, dsc_optimizer, fold))
+        loss, pretrain_score = train_pretrain(train_dataloader, model, epoch, 'PanCancer', optimizer, dsc_optimizer, fold, omics)
+        Loss_list.append(loss)
+        pretrain_score_list.append(pretrain_score)
 
-        test_Loss_list.append(val_pretrain(test_dataloader, model, epoch, 'PanCancer', fold))
+        test_Loss_list.append(val_pretrain(test_dataloader, model, epoch, 'PanCancer', fold, omics))
         print(f'fold{fold} time used: ', time.time() - start_time)
 
     model_dict = model.state_dict()
     Loss_list = torch.Tensor(Loss_list)
     test_Loss_list = torch.Tensor(test_Loss_list)
-
+    pretrain_score_list = pd.DataFrame(pretrain_score_list, columns=['pretrain_score'])
+    pretrain_score_list.to_csv(f'pretrain_score_list_fold{fold}.csv')
     torch.save(test_Loss_list, f'../model/model_dict/TCGA_pancancer_pretrain_test_loss_fold{fold}.pt')
     torch.save(Loss_list, f'../model/model_dict/TCGA_pancancer_pretrain_train_loss_fold{fold}.pt')
     torch.save(model_dict, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{fold}_dim64.pt')
@@ -249,7 +252,7 @@ def train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omic
     with tqdm(train_dataloader, unit='batch') as tepoch:
         for batch, data in enumerate(tepoch):
             tepoch.set_description(f" Epoch {epoch}: ")
-            os_time, os_event, omics_data, _ = data
+            os_event, os_time, omics_data, _ = data
             os_event = os_event.cuda()
             os_time = os_time.cuda()
             train_censors = torch.concat((train_censors, os_event))
@@ -258,7 +261,7 @@ def train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omic
             input_x = [omics_data[key].cuda() for key in omics_data.keys()]
 
             risk_score = model(input_x, os_event.size(0), omics)
-            pretrain_loss, _, _, _, _ = model.cross_encoders.compute_generate_loss(input_x, os_event.size(0))
+            pretrain_loss, _, _, _, _ = model.cross_encoders.compute_generate_loss(input_x, os_event.size(0), omics)
             train_risk_score = torch.concat((train_risk_score, risk_score))
             CoxLoss = cox_loss(os_time, os_event, risk_score)
             loss = CoxLoss + 0.6 * pretrain_loss
@@ -296,7 +299,7 @@ def cal_c_index(dataloader, model, best_c_index, best_c_indices, omics):
         event_times = torch.zeros((len(dataloader)))
 
         for i, data in enumerate(dataloader):
-            os_time, os_event, omics_data, _ = data
+            os_event, os_time, omics_data, cancer_label = data
             input_x = [omics_data[key].cuda() for key in omics_data.keys()]
             os_event = os_event.cuda()
             os_time = os_time.cuda()
@@ -304,12 +307,12 @@ def cal_c_index(dataloader, model, best_c_index, best_c_indices, omics):
             survival_risk = model(input_x, os_event.size(0), omics)
 
             gex_survival_risk = model(input_x, os_event.size(0), {'gex': 0})
-            mut_survival_risk = model(input_x, os_event.size(0), {'mut': 2})
-            cnv_survival_risk = model(input_x, os_event.size(0), {'cnv': 3})
+            mut_survival_risk = model([input_x[2]], os_event.size(0), {'mut': 2})
+            cnv_survival_risk = model([input_x[3]], os_event.size(0), {'cnv': 3})
 
-            gex_cnv_survival_risk = model(input_x, os_event.size(0), {'gex': 0, 'cnv': 3})
-            gex_mut_survival_risk = model(input_x, os_event.size(0), {'gex': 0, 'mut': 2})
-            cnv_mut_survival_risk = model(input_x, os_event.size(0), {'cnv': 3, 'mut': 2})
+            gex_cnv_survival_risk = model([input_x[0], input_x[3]], os_event.size(0), {'gex': 0, 'cnv': 3})
+            gex_mut_survival_risk = model([input_x[0], input_x[2]], os_event.size(0), {'gex': 0, 'mut': 2})
+            cnv_mut_survival_risk = model([input_x[2], input_x[3]], os_event.size(0), {'mut': 2, 'cnv': 3})
 
             risk_scores['gex'][i] = gex_survival_risk
             risk_scores['mut'][i] = mut_survival_risk
@@ -340,12 +343,12 @@ def TCGA_Dataset_survival_prediction(fold, epochs, cancer_types, pretrain_model_
     pancancer_c_index = []
     for cancer in cancer_types:
         print(cancer)
-        train_dataset = CancerDataset(omics_files, ['cna', 'gex', 'methy', 'mut'], clinical_file, train_index_path,
+        train_dataset = CancerDataset(omics_files, ['gex', 'methy', 'mut', 'cna'], clinical_file, train_index_path,
                                       fold + 1, [cancer])
-        test_dataset = CancerDataset(omics_files, ['cna', 'gex', 'methy', 'mut'], clinical_file, test_index_path,
+        test_dataset = CancerDataset(omics_files, ['gex', 'methy', 'mut', 'cna'], clinical_file, test_index_path,
                                      fold + 1, [cancer])
 
-        train_dataloader = DataLoader(train_dataset, batch_size=16, drop_last=True)
+        train_dataloader = DataLoader(train_dataset, batch_size=32, drop_last=True)
         test_dataloader = DataLoader(test_dataset, batch_size=1)
         task = {'output_dim': 1}
         model = DownStream_predictor(4, [6016, 6617, 4539, 7460], 64, [2048, 1024, 512],
@@ -396,16 +399,16 @@ def train_classification(dataloader, model, epoch, cancer, fold, optimizer, omic
 
         for batch, data in enumerate(tepoch):
             tepoch.set_description(f" Epoch {epoch}: ")
-            os_time, os_event, omics_data, cancer_label = data
+            os_event, os_time, omics_data, cancer_label = data
             cancer_label = cancer_label.cuda()
             cancer_label = cancer_label.squeeze()
 
             input_x = [omics_data[key].cuda() for key in omics_data.keys()]
 
-            classification_pred = model(input_x, os_event.size(0), omics)
+            classification_pred = model([input_x[0], input_x[1], input_x[3]], os_event.size(0), {'gex': 0, 'methy': 1, 'cna': 3})
             _, labels_pred = torch.max(classification_pred, 1)
 
-            pretrain_loss, _, _, _, _ = model.cross_encoders.compute_generate_loss(input_x, os_event.size(0))
+            pretrain_loss, _, _, _, _ = model.cross_encoders.compute_generate_loss([input_x[0], input_x[1], input_x[3]], os_event.size(0), {'gex': 0, 'methy': 1, 'cna': 3})
             pred_loss = criterion(classification_pred, cancer_label)
             total_loss += pred_loss.item()
             loss = pred_loss
@@ -432,13 +435,14 @@ def train_classification(dataloader, model, epoch, cancer, fold, optimizer, omic
         print('fold {} train:, Loss: {:.4f} Acc: {:.4f} Precision: {:.4f} Recall: {:.4f} F1: {:.4f}'
               .format(fold, total_loss / len(dataloader), acc, precision, recall, f1))
         all_labels = torch.Tensor(all_labels)
-        torch.save(all_labels, 'pancancer_label.pt')
-    torch.save(pancancer_embedding, 'pancancer_embedding.pt')
+        torch.save(all_labels, f'train_pancancer_fold{fold}_label.pt')
+    torch.save(pancancer_embedding, f'train_pancancer_fold{fold}_embedding.pt')
 
 
 def test_classification(dataloader, model, epoch, cancer, fold, optimizer, omics, criterion):
     total_loss = 0
     model.eval()
+    pancancer_embedding = torch.Tensor([]).cuda()
     with torch.no_grad():
         with tqdm(dataloader, unit='batch') as tepoch:
             total_samples = 0
@@ -447,13 +451,16 @@ def test_classification(dataloader, model, epoch, cancer, fold, optimizer, omics
 
             for batch, data in enumerate(tepoch):
                 tepoch.set_description(f" Epoch {epoch}: ")
-                os_time, os_event, omics_data, cancer_label = data
+                os_event, os_time, omics_data, cancer_label = data
                 cancer_label = cancer_label.cuda()
                 cancer_label = cancer_label.squeeze()
 
                 input_x = [omics_data[key].cuda() for key in omics_data.keys()]
 
-                classification_pred = model(input_x, os_event.size(0), omics)
+                embedding_tensor = model.cross_encoders.get_embedding(input_x[:2], os_event.size(0), {'gex': 0, 'methy': 1})
+                pancancer_embedding = torch.concat((pancancer_embedding, embedding_tensor), dim=0)
+
+                classification_pred = model([input_x[0], input_x[1], input_x[3]], os_event.size(0), {'gex': 0, 'methy': 1, 'cna': 3})
                 _, labels_pred = torch.max(classification_pred, 1)
 
                 pred_loss = criterion(classification_pred, cancer_label)
@@ -474,7 +481,11 @@ def test_classification(dataloader, model, epoch, cancer, fold, optimizer, omics
 
             print('fold {} test:, Loss: {:.4f} Acc: {:.4f} Precision: {:.4f} Recall: {:.4f} F1: {:.4f}'.
                   format(fold, total_loss / len(dataloader), acc, precision, recall, f1))
+            all_labels = torch.Tensor(all_labels)
 
+            torch.save(all_labels, f'test_pancancer_fold{fold}_label.pt')
+            torch.save(pancancer_embedding, f'test_pancancer_fold{fold}_embedding.pt')
+            return acc, precision, recall, f1
 
 
 def TCGA_Dataset_classification(fold, epochs, pretrain_model_path, fixed, device_id):
@@ -500,14 +511,19 @@ def TCGA_Dataset_classification(fold, epochs, pretrain_model_path, fixed, device
     ]
 
     optimizer = torch.optim.Adam(param_groups)
-
+    best_acc = 0
+    classification_score = []
     for epoch in range(epochs):
         # adjust_learning_rate(optimizer, epoch, 0.0001)
+
         start_time = time.time()
         train_classification(train_dataloader, model, epoch, 'pancancer', fold, optimizer, omics, criterion)
-        with torch.no_grad():
-            test_classification(test_dataloader, model, epoch, 'pancancer', fold, optimizer, omics, criterion)
 
+        acc, precision, recall, f1 = test_classification(test_dataloader, model, epoch, 'pancancer', fold, optimizer, omics, criterion)
+        if acc > best_acc:
+            classification_score = [[fold, acc, precision, recall, f1]]
+        classification_score = pd.DataFrame(classification_score, columns=['fold', 'acc', 'precision', 'recall', 'f1'])
+        classification_score.to_csv(f'classification_score_fold{fold}.csv')
         print(f'fold {fold} time used: ', time.time() - start_time)
 
     #   clean memory of gpu cuda
@@ -518,9 +534,9 @@ def TCGA_Dataset_classification(fold, epochs, pretrain_model_path, fixed, device
     torch.cuda.empty_cache()
 
 
-device_ids = [0, 3, 5, 6, 7]
+device_ids = [0, 4, 5, 6, 7]
 folds = 5
-all_epochs = 10
+all_epochs = 20
 
 
 #   multiprocessing pretrain_fold
@@ -535,9 +551,9 @@ def multiprocessing_train_fold(function, func_args_list):
         p.join()
 
 
-class_func_args = [(i, all_epochs, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold0_dim64.pt', False, device_ids[i]) for i in range(folds)]
-cancer_type_list = ['LGG', 'BLCA', 'COAD']
-survival_func_args = [(i, all_epochs, cancer_type_list, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold0_dim64.pt', False, device_ids[i]) for i in range(folds)]
+class_func_args = [(i, all_epochs, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
+cancer_type_list = ['LGG', 'BLCA', 'BRCA', 'COAD', 'HNSC', 'KIRC', 'LIHC', 'LUAD', 'STAD']
+survival_func_args = [(i, all_epochs, cancer_type_list, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
 pretrain_func_args = [(i, all_epochs, device_ids[i]) for i in range(folds)]
 
-multiprocessing_train_fold(TCGA_Dataset_pretrain, pretrain_func_args)
+multiprocessing_train_fold(TCGA_Dataset_classification, class_func_args)
