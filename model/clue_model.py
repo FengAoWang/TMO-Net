@@ -433,7 +433,7 @@ class LMF(nn.Module):
 
 
 class DownStream_predictor(nn.Module):
-    def __init__(self, modal_num, modal_dim, latent_dim, hidden_dim, pretrain_model_path, task, omics_data, fixed):
+    def __init__(self, modal_num, modal_dim, latent_dim, hidden_dim, pretrain_model_path, task, omics_data, fixed, omics):
         super(DownStream_predictor, self).__init__()
         self.k = modal_num
         #   cross encoders
@@ -456,9 +456,13 @@ class DownStream_predictor(nn.Module):
                                                   nn.ReLU(),
 
                                                   nn.Linear(64, task['output_dim']))
+        omics_values = set(omics.values())
+        for i in range(self.k):
+            if i not in omics_values:
+                print('fix cross-modal encoders')
+                dfs_freeze(self.cross_encoders.encoders[:][i])
 
         if fixed:
-            print('fix cross encoders')
             dfs_freeze(self.cross_encoders)
 
     def un_dfs_freeze_encoder(self):
@@ -499,7 +503,7 @@ class SNN_block(nn.Module):
         super(SNN_block, self).__init__()
         self.snn_block = nn.Sequential(nn.Linear(input_dim, output_dim),
                                        nn.BatchNorm1d(output_dim),
-                                       nn.SELU())
+                                       nn.ReLU())
 
     def forward(self, input_x):
         return self.snn_block(input_x)
@@ -510,7 +514,7 @@ class SNN_encoder(nn.Module):
         super(SNN_encoder, self).__init__()
         self.fc1 = nn.Sequential(nn.Linear(model_dim, hidden_dim[0]),
                                  nn.BatchNorm1d(hidden_dim[0]),
-                                 nn.SELU())
+                                 nn.ReLU())
         self.encoders = nn.ModuleList(
             [SNN_block(hidden_dim[i], hidden_dim[i + 1]) for i in range(0, len(hidden_dim) - 1)])
         self.fc2 = nn.Linear(hidden_dim[-1], latent_dim)
@@ -532,7 +536,7 @@ class PanCancer_SNN_predictor(nn.Module):
 
         self.predictor = nn.Sequential(nn.Linear(modal_num * latent_dim, 64),
                                        nn.BatchNorm1d(64),
-                                       nn.SELU(),
+                                       nn.ReLU(),
                                        nn.Linear(64, task['output_dim']))
 
     def forward(self, input_x):
