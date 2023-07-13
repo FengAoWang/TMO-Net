@@ -1,3 +1,4 @@
+import random
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
@@ -156,6 +157,7 @@ class Clue_model(nn.Module):
         keys = omics.keys()
         values = list(omics.values())
         output = [[0 for i in range(self.k)] for j in range(self.k)]
+
         for (item, i) in enumerate(values):
             for j in range(self.k):
                 output[i][j] = self.encoders[i][j](input_x[item])
@@ -165,28 +167,30 @@ class Clue_model(nn.Module):
 
     def compute_generate_loss(self, input_x, batch_size, omics):
         values = list(omics.values())
+        mask_k = random.randint(0, self.k*5)
         output = [[0 for i in range(self.k)] for j in range(self.k)]
         for (item, i) in enumerate(values):
             for j in range(self.k):
                 output[i][j] = self.encoders[i][j](input_x[item])
 
-        self_elbo = self.self_elbo([output[i][i] for i in range(self.k)], input_x, omics)
-        cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size, omics)
-        cross_infer_loss = self.cross_infer_loss(output, omics)
-        dsc_loss = self.adversarial_loss(batch_size, output, omics)
+        self_elbo = self.self_elbo([output[i][i] for i in range(self.k)], input_x, omics, mask_k)
+        cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
+        cross_infer_loss = self.cross_infer_loss(output, omics, mask_k)
+        dsc_loss = self.adversarial_loss(batch_size, output, omics, mask_k)
         generate_loss = self_elbo + cross_elbo + cross_infer_loss * cross_infer_loss - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
         # generate_loss = self_elbo
         return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss
 
     def compute_dsc_loss(self, input_x, batch_size, omics):
+        mask_k = random.randint(0, self.k*5)
         values = list(omics.values())
         output = [[0 for i in range(self.k)] for j in range(self.k)]
         for (item, i) in enumerate(values):
             for j in range(self.k):
                 output[i][j] = self.encoders[i][j](input_x[item])
 
-        cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size, omics)
-        dsc_loss = self.adversarial_loss(batch_size, output, omics)
+        cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
+        dsc_loss = self.adversarial_loss(batch_size, output, omics, mask_k)
         return cross_infer_dsc_loss, dsc_loss
 
     def share_representation(self, output, omics):
@@ -194,18 +198,19 @@ class Clue_model(nn.Module):
         share_features = [self.share_encoder(output[i][i][1]) for i in values]
         return share_features
 
-    def self_elbo(self, input_x, input_omic, omics):
+    def self_elbo(self, input_x, input_omic, omics, mask_k):
         self_vae_elbo = 0
         keys = omics.keys()
         values = list(omics.values())
         for item, i in enumerate(values):
-            latent_z, mu, log_var = input_x[i]
-            reconstruct_omic = self.self_decoders[i](latent_z)
-            self_vae_elbo += 0.01 * KL_loss(mu, log_var, 1.0) + reconstruction_loss(input_omic[item], reconstruct_omic, 1.0,
-                                                                             self.omics_data[i])
+            if i != mask_k:
+                latent_z, mu, log_var = input_x[i]
+                reconstruct_omic = self.self_decoders[i](latent_z)
+                self_vae_elbo += 0.01 * KL_loss(mu, log_var, 1.0) + reconstruction_loss(input_omic[item], reconstruct_omic, 1.0,
+                                                                                 self.omics_data[i])
         return self_vae_elbo
 
-    def cross_elbo(self, input_x, input_omic, batch_size, omics):
+    def cross_elbo(self, input_x, input_omic, batch_size, omics, mask_k):
         cross_elbo = 0
         cross_infer_loss = 0
         cross_modal_KL_loss = 0
@@ -220,10 +225,11 @@ class Clue_model(nn.Module):
                 mu_set = []
                 log_var_set = []
                 for j in range(self.k):
-                    if (i != j) and (j in values):
+                    if (i != j) and (j in values) and (j != mask_k):
                         latent_z, mu, log_var = input_x[j][i]
                         mu_set.append(mu)
                         log_var_set.append(log_var)
+
                 poe_mu, poe_log_var = product_of_experts(mu_set, log_var_set)
                 poe_latent_z = reparameterize(poe_mu, poe_log_var)
                 if i in values:
@@ -246,7 +252,7 @@ class Clue_model(nn.Module):
         cross_modal_dsc_loss = cross_modal_dsc_loss.sum(0) / (self.k * batch_size)
         return cross_elbo + cross_infer_loss + 0.01 * cross_modal_KL_loss, cross_modal_dsc_loss
 
-    def cross_infer_loss(self, input_x, omics):
+    def cross_infer_loss(self, input_x, omics, mask_k):
         values = list(omics.values())
         latent_mu = [0 for i in range(len(input_x))]
         for i in range(self.k):
@@ -254,18 +260,18 @@ class Clue_model(nn.Module):
                 latent_mu[i] = input_x[i][i][1]
         infer_loss = 0
         for i in range(len(input_x)):
-            if i in values:
+            if (i in values) and (i != mask_k):
                 for j in range(len(input_x)):
                     if (i != j) and (j in values):
                         latent_z_infer, latent_mu_infer, _ = input_x[j][i]
                         infer_loss += reconstruction_loss(latent_mu_infer, latent_mu[i], 1.0, 'gaussian')
         return infer_loss / len(values)
 
-    def adversarial_loss(self, batch_size, output, omics):
+    def adversarial_loss(self, batch_size, output, omics, mask_k):
         dsc_loss = 0
         values = list(omics.values())
         for i in range(self.k):
-            if i in values:
+            if (i in values) and (i != mask_k):
                 latent_z, mu, log_var = output[i][i]
                 shared_fe = self.share_encoder(mu)
 
