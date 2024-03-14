@@ -41,6 +41,88 @@ def product_of_experts(mu_set_, log_var_set_):
     return poe_mu, poe_log_var
 
 
+def r_squared_pytorch(y_actual, y_predicted):
+    """
+    Calculate the coefficient of determination (R^2) value for multi-output regression with PyTorch tensors.
+
+    Parameters:
+    - y_actual: PyTorch tensor of actual observed values.
+    - y_predicted: PyTorch tensor of predicted values from the model.
+
+    Returns:
+    - PyTorch tensor of R^2 values for each output dimension.
+    """
+    # Ensure the input tensors are of correct shape
+    if y_actual.shape != y_predicted.shape:
+        raise ValueError("Shapes of y_actual and y_predicted do not match.")
+
+    # Calculate the mean of the observed values for each dimension
+    y_mean = y_actual.mean(dim=0)
+
+    # Calculate the total sum of squares (SS_tot) for each dimension
+    ss_tot = ((y_actual - y_mean) ** 2).sum(dim=0)
+
+    # Calculate the residual sum of squares (SS_res) for each dimension
+    ss_res = ((y_actual - y_predicted) ** 2).sum(dim=0)
+
+    # Calculate the R^2 value for each dimension
+    r2_values = 1 - (ss_res / ss_tot)
+
+    return r2_values
+
+
+def cosine_similarity_rows_tensor(A, B):
+    """
+    Calculate cosine similarity between corresponding rows of two batches of tensors.
+
+    Parameters:
+    - A, B: tensors of shape (n, w) where n is the batch size and w is the feature dimension.
+
+    Returns:
+    - cosine_sim: tensor of shape (n,) containing cosine similarity scores between corresponding rows of A and B.
+    """
+
+    # Calculate the dot product between corresponding rows of A and B
+    dot_product = torch.sum(A * B, dim=1)
+
+    # Calculate the L2 norm for A and B
+    norm_A = torch.norm(A, dim=1)
+    norm_B = torch.norm(B, dim=1)
+
+    # Calculate the cosine similarity for corresponding rows
+    cosine_sim = dot_product / (norm_A * norm_B)
+
+    return cosine_sim
+
+
+def corrected_pearson_correlation_rows_tensor(A, B):
+    """
+    Correctly calculate Pearson correlation coefficient between corresponding rows of two batches of tensors.
+
+    Parameters:
+    - A, B: tensors of shape (n, w) where n is the batch size and w is the feature dimension.
+
+    Returns:
+    - correlation: tensor of shape (n,) containing Pearson correlation coefficients between corresponding rows of A and B.
+    """
+
+    # Calculate means of A and B
+    mean_A = torch.mean(A, dim=1, keepdim=True)
+    mean_B = torch.mean(B, dim=1, keepdim=True)
+
+    # Calculate the covariance between A and B
+    covariance = torch.sum((A - mean_A) * (B - mean_B), dim=1) / (A.shape[1] - 1)
+
+    # Calculate the standard deviations of A and B
+    std_A = torch.std(A, dim=1, unbiased=True)
+    std_B = torch.std(B, dim=1, unbiased=True)
+
+    # Calculate the Pearson correlation coefficient for corresponding rows
+    correlation = covariance / (std_A * std_B)
+
+    return correlation
+
+
 class encoder(nn.Module):
     def __init__(self, input_dim, latent_dim, hidden_dim):
         super(encoder, self).__init__()
@@ -115,9 +197,9 @@ class decoder(nn.Module):
         return self.decoder(latent_z)
 
 
-class Clue_model(nn.Module):
+class TMO_Net(nn.Module):
     def __init__(self, modal_num, modal_dim, latent_dim, hidden_dim, omics_data, pretrain=False):
-        super(Clue_model, self).__init__()
+        super(TMO_Net, self).__init__()
 
         self.k = modal_num
         self.encoders = nn.ModuleList(
@@ -167,29 +249,31 @@ class Clue_model(nn.Module):
 
     def compute_generate_loss(self, input_x, batch_size, omics):
         values = list(omics.values())
-        mask_k = random.randint(0, self.k*5)
+        # mask_k = random.randint(0, self.k*5)
+        mask_k = 10
         output = [[0 for i in range(self.k)] for j in range(self.k)]
         for (item, i) in enumerate(values):
             for j in range(self.k):
                 output[i][j] = self.encoders[i][j](input_x[item])
 
         self_elbo = self.self_elbo([output[i][i] for i in range(self.k)], input_x, omics, mask_k)
-        cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
+        cross_elbo, cross_infer_dsc_loss, pearson_scores, input_data, reconstruct_data = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
         cross_infer_loss = self.cross_infer_loss(output, omics, mask_k)
         dsc_loss = self.adversarial_loss(batch_size, output, omics, mask_k)
-        generate_loss = self_elbo + cross_elbo + cross_infer_loss * cross_infer_loss - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
-        # generate_loss = self_elbo
-        return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss
+        # generate_loss = self_elbo + cross_elbo + cross_infer_loss * cross_infer_loss - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
+        generate_loss = self_elbo - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
+        return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, pearson_scores, input_data, reconstruct_data
 
     def compute_dsc_loss(self, input_x, batch_size, omics):
-        mask_k = random.randint(0, self.k*5)
+        # mask_k = random.randint(0, self.k*5)
+        mask_k = 10
         values = list(omics.values())
         output = [[0 for i in range(self.k)] for j in range(self.k)]
         for (item, i) in enumerate(values):
             for j in range(self.k):
                 output[i][j] = self.encoders[i][j](input_x[item])
 
-        cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
+        cross_elbo, cross_infer_dsc_loss, _, _, _ = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
         dsc_loss = self.adversarial_loss(batch_size, output, omics, mask_k)
         return cross_infer_dsc_loss, dsc_loss
 
@@ -202,12 +286,14 @@ class Clue_model(nn.Module):
         self_vae_elbo = 0
         keys = omics.keys()
         values = list(omics.values())
+        r_squared = []
         for item, i in enumerate(values):
             if i != mask_k:
                 latent_z, mu, log_var = input_x[i]
                 reconstruct_omic = self.self_decoders[i](latent_z)
                 self_vae_elbo += 0.01 * KL_loss(mu, log_var, 1.0) + reconstruction_loss(input_omic[item], reconstruct_omic, 1.0,
                                                                                  self.omics_data[i])
+
         return self_vae_elbo
 
     def cross_elbo(self, input_x, input_omic, batch_size, omics, mask_k):
@@ -218,7 +304,9 @@ class Clue_model(nn.Module):
 
         values = list(omics.values())
         keys = omics.keys()
-
+        all_pearson_scores = torch.Tensor([]).cuda()
+        input_data = torch.Tensor([]).cuda()
+        reconstruction_data = torch.Tensor([]).cuda()
         for i in range(self.k):
             if i in values:
                 real_latent_z, real_mu, real_log_var = input_x[i][i]
@@ -237,6 +325,12 @@ class Clue_model(nn.Module):
 
                     cross_elbo += 0.01 * KL_loss(poe_mu, poe_log_var, 1.0) + reconstruction_loss(input_omic[values.index(i)], reconstruct_omic, 1.0,
                                                                                           self.omics_data[i])
+                    if i == 0:
+                        # pearson_score = corrected_pearson_correlation_rows_tensor(input_omic[values.index(i)], reconstruction_data)
+                        # all_pearson_scores = torch.concat((all_pearson_scores, pearson_score), dim=0)
+                        input_data = torch.concat((input_data, input_omic[values.index(i)]), dim=0)
+                        reconstruction_data = torch.concat((reconstruction_data, reconstruct_omic), dim=0)
+                        # print('r_squared', r2_score)
                     cross_infer_loss += reconstruction_loss(real_mu, poe_mu, 1.0, 'gaussian')
 
                     cross_modal_KL_loss += KL_divergence(poe_mu, real_mu, poe_log_var, real_log_var)
@@ -250,7 +344,7 @@ class Clue_model(nn.Module):
                     cross_modal_dsc_loss += F.cross_entropy(pred_infer_modal, infer_modal, reduction='none')
 
         cross_modal_dsc_loss = cross_modal_dsc_loss.sum(0) / (self.k * batch_size)
-        return cross_elbo + cross_infer_loss + 0.01 * cross_modal_KL_loss, cross_modal_dsc_loss
+        return cross_elbo + cross_infer_loss + 0.01 * cross_modal_KL_loss, cross_modal_dsc_loss, all_pearson_scores, input_data, reconstruction_data
 
     def cross_infer_loss(self, input_x, omics, mask_k):
         values = list(omics.values())
@@ -307,11 +401,11 @@ class Clue_model(nn.Module):
             embedding_tensor.append(joint_mu)
 
         embedding_tensor = torch.cat(embedding_tensor, dim=1)
-        multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
-        return multi_representation
+        # multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
+        return embedding_tensor
 
     @staticmethod
-    def contrastive_loss(embeddings, labels, margin=1.0, distance='cosine'):
+    def contrastive_loss(embeddings, labels, margin=1.0, distance='euclidean'):
 
         if distance == 'euclidean':
             distances = torch.cdist(embeddings, embeddings)
@@ -443,7 +537,7 @@ class DownStream_predictor(nn.Module):
         super(DownStream_predictor, self).__init__()
         self.k = modal_num
         #   cross encoders
-        self.cross_encoders = Clue_model(modal_num, modal_dim, latent_dim, hidden_dim, omics_data)
+        self.cross_encoders = TMO_Net(modal_num, modal_dim, latent_dim, hidden_dim, omics_data)
         if pretrain_model_path:
             print('load pretrain model')
             model_pretrain_dict = torch.load(pretrain_model_path, map_location='cpu')
@@ -451,7 +545,7 @@ class DownStream_predictor(nn.Module):
         #   分类器
         # self.lmf = LMF(64, 16)
         self.lmf_fusion = LMF_fusion(64, 16, self.k)
-        self.downstream_predictor = nn.Sequential(nn.Linear(latent_dim * (self.k + 1), 128),
+        self.downstream_predictor = nn.Sequential(nn.Linear(latent_dim * self.k, 128),
                                                   nn.BatchNorm1d(128),
                                                   nn.Dropout(0.2),
                                                   nn.ReLU(),
@@ -492,9 +586,9 @@ class DownStream_predictor(nn.Module):
             poe_latent_z = reparameterize(poe_mu, poe_log_var)
 
             embedding_tensor.append(poe_mu)
-        embedding_tensor = self.lmf_fusion(embedding_tensor)
-        multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
-        return multi_representation
+        embedding_tensor = torch.cat(embedding_tensor, dim=1)
+        # multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
+        return embedding_tensor
 
     # omics dict, 标注输入的数据
     def forward(self, input_x, batch_size, omics):

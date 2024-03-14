@@ -50,13 +50,14 @@ def KL_divergence(mu1, mu2, log_sigma1, log_sigma2):
 
 
 def reconstruction_loss(recon_x, x, recon_param, dist):
-    BCE = torch.nn.BCEWithLogitsLoss(reduction="sum")
+    BCE = torch.nn.BCEWithLogitsLoss(reduction="mean")
     batch_size = recon_x.shape[0]
     if dist == 'bernoulli':
         recons_loss = BCE(recon_x, x) / batch_size
     elif dist == 'gaussian':
         x_recons = recon_x
         recons_loss = F.mse_loss(x_recons, x, reduction='mean') / batch_size
+
     elif dist == 'F2norm':
         recons_loss = torch.norm(recon_x-x, p=2)
     else:
