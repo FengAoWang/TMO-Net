@@ -53,11 +53,10 @@ def reconstruction_loss(recon_x, x, recon_param, dist):
     BCE = torch.nn.BCEWithLogitsLoss(reduction="mean")
     batch_size = recon_x.shape[0]
     if dist == 'bernoulli':
-        recons_loss = BCE(recon_x, x) / batch_size
+        recons_loss = BCE(recon_x, x)
     elif dist == 'gaussian':
         x_recons = recon_x
-        recons_loss = F.mse_loss(x_recons, x, reduction='mean') / batch_size
-
+        recons_loss = F.mse_loss(x_recons, x).mean()
     elif dist == 'F2norm':
         recons_loss = torch.norm(recon_x-x, p=2)
     else:

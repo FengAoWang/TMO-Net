@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from util.loss_function import KL_loss, reconstruction_loss, KL_divergence
 from functools import reduce
+import numpy as np
 
 
 def reparameterize(mean, logvar):
@@ -42,16 +43,6 @@ def product_of_experts(mu_set_, log_var_set_):
 
 
 def r_squared_pytorch(y_actual, y_predicted):
-    """
-    Calculate the coefficient of determination (R^2) value for multi-output regression with PyTorch tensors.
-
-    Parameters:
-    - y_actual: PyTorch tensor of actual observed values.
-    - y_predicted: PyTorch tensor of predicted values from the model.
-
-    Returns:
-    - PyTorch tensor of R^2 values for each output dimension.
-    """
     # Ensure the input tensors are of correct shape
     if y_actual.shape != y_predicted.shape:
         raise ValueError("Shapes of y_actual and y_predicted do not match.")
@@ -72,16 +63,6 @@ def r_squared_pytorch(y_actual, y_predicted):
 
 
 def cosine_similarity_rows_tensor(A, B):
-    """
-    Calculate cosine similarity between corresponding rows of two batches of tensors.
-
-    Parameters:
-    - A, B: tensors of shape (n, w) where n is the batch size and w is the feature dimension.
-
-    Returns:
-    - cosine_sim: tensor of shape (n,) containing cosine similarity scores between corresponding rows of A and B.
-    """
-
     # Calculate the dot product between corresponding rows of A and B
     dot_product = torch.sum(A * B, dim=1)
 
@@ -96,16 +77,6 @@ def cosine_similarity_rows_tensor(A, B):
 
 
 def corrected_pearson_correlation_rows_tensor(A, B):
-    """
-    Correctly calculate Pearson correlation coefficient between corresponding rows of two batches of tensors.
-
-    Parameters:
-    - A, B: tensors of shape (n, w) where n is the batch size and w is the feature dimension.
-
-    Returns:
-    - correlation: tensor of shape (n,) containing Pearson correlation coefficients between corresponding rows of A and B.
-    """
-
     # Calculate means of A and B
     mean_A = torch.mean(A, dim=1, keepdim=True)
     mean_B = torch.mean(B, dim=1, keepdim=True)
@@ -177,19 +148,18 @@ class decoder(nn.Module):
         super(decoder, self).__init__()
         self.decoder = nn.Sequential(nn.Linear(latent_dim, hidden_dim[2]),
                                      nn.BatchNorm1d(hidden_dim[2]),
-                                     # nn.Dropout(0.2),
-                                     nn.ReLU(),
+                                     nn.Dropout(0.2),
+                                     nn.LeakyReLU(),
 
                                      nn.Linear(hidden_dim[2], hidden_dim[1]),
                                      nn.BatchNorm1d(hidden_dim[1]),
-                                     # nn.Dropout(0.2),
-                                     nn.ReLU(),
+                                     nn.Dropout(0.2),
+                                     nn.LeakyReLU(),
 
                                      nn.Linear(hidden_dim[1], hidden_dim[0]),
                                      nn.BatchNorm1d(hidden_dim[0]),
-                                     # nn.Dropout(0.2),
-                                     nn.ReLU(),
-
+                                     nn.Dropout(0.2),
+                                     nn.LeakyReLU(),
                                      nn.Linear(hidden_dim[0], input_dim),
                                      )
 
@@ -228,8 +198,6 @@ class TMO_Net(nn.Module):
         #   loss function hyperparameter
         self.loss_weight = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], requires_grad=True)
 
-        self.lmf_fusion = LMF_fusion(64, 16, 4)
-
         self.omics_data = omics_data
         if pretrain:
             dfs_freeze(self.encoders)
@@ -260,8 +228,9 @@ class TMO_Net(nn.Module):
         cross_elbo, cross_infer_dsc_loss, pearson_scores, input_data, reconstruct_data = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
         cross_infer_loss = self.cross_infer_loss(output, omics, mask_k)
         dsc_loss = self.adversarial_loss(batch_size, output, omics, mask_k)
-        # generate_loss = self_elbo + cross_elbo + cross_infer_loss * cross_infer_loss - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
-        generate_loss = self_elbo - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
+        generate_loss = self_elbo + cross_elbo + cross_infer_loss * cross_infer_loss
+        # - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
+        # generate_loss = self_elbo - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
         return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, pearson_scores, input_data, reconstruct_data
 
     def compute_dsc_loss(self, input_x, batch_size, omics):
@@ -293,7 +262,6 @@ class TMO_Net(nn.Module):
                 reconstruct_omic = self.self_decoders[i](latent_z)
                 self_vae_elbo += 0.01 * KL_loss(mu, log_var, 1.0) + reconstruction_loss(input_omic[item], reconstruct_omic, 1.0,
                                                                                  self.omics_data[i])
-
         return self_vae_elbo
 
     def cross_elbo(self, input_x, input_omic, batch_size, omics, mask_k):
@@ -303,10 +271,6 @@ class TMO_Net(nn.Module):
         cross_modal_dsc_loss = 0
 
         values = list(omics.values())
-        keys = omics.keys()
-        all_pearson_scores = torch.Tensor([]).cuda()
-        input_data = torch.Tensor([]).cuda()
-        reconstruction_data = torch.Tensor([]).cuda()
         for i in range(self.k):
             if i in values:
                 real_latent_z, real_mu, real_log_var = input_x[i][i]
@@ -325,12 +289,6 @@ class TMO_Net(nn.Module):
 
                     cross_elbo += 0.01 * KL_loss(poe_mu, poe_log_var, 1.0) + reconstruction_loss(input_omic[values.index(i)], reconstruct_omic, 1.0,
                                                                                           self.omics_data[i])
-                    if i == 0:
-                        # pearson_score = corrected_pearson_correlation_rows_tensor(input_omic[values.index(i)], reconstruction_data)
-                        # all_pearson_scores = torch.concat((all_pearson_scores, pearson_score), dim=0)
-                        input_data = torch.concat((input_data, input_omic[values.index(i)]), dim=0)
-                        reconstruction_data = torch.concat((reconstruction_data, reconstruct_omic), dim=0)
-                        # print('r_squared', r2_score)
                     cross_infer_loss += reconstruction_loss(real_mu, poe_mu, 1.0, 'gaussian')
 
                     cross_modal_KL_loss += KL_divergence(poe_mu, real_mu, poe_log_var, real_log_var)
@@ -344,7 +302,7 @@ class TMO_Net(nn.Module):
                     cross_modal_dsc_loss += F.cross_entropy(pred_infer_modal, infer_modal, reduction='none')
 
         cross_modal_dsc_loss = cross_modal_dsc_loss.sum(0) / (self.k * batch_size)
-        return cross_elbo + cross_infer_loss + 0.01 * cross_modal_KL_loss, cross_modal_dsc_loss, all_pearson_scores, input_data, reconstruction_data
+        return cross_elbo + cross_infer_loss + 0.01 * cross_modal_KL_loss, cross_modal_dsc_loss
 
     def cross_infer_loss(self, input_x, omics, mask_k):
         values = list(omics.values())
@@ -367,7 +325,7 @@ class TMO_Net(nn.Module):
         for i in range(self.k):
             if (i in values) and (i != mask_k):
                 latent_z, mu, log_var = output[i][i]
-                shared_fe = self.share_encoder(mu)
+                shared_fe = mu
 
                 real_modal = (torch.tensor([i for j in range(batch_size)])).cuda()
                 pred_modal = self.discriminator(shared_fe)
@@ -382,7 +340,6 @@ class TMO_Net(nn.Module):
         embedding_tensor = []
         keys = list(omics.keys())
         values = list(omics.values())
-        share_features = sum(share_representation) / len(keys)
 
         for i in range(self.k):
             mu_set = []
@@ -399,9 +356,7 @@ class TMO_Net(nn.Module):
             else:
                 joint_mu = poe_mu
             embedding_tensor.append(joint_mu)
-
         embedding_tensor = torch.cat(embedding_tensor, dim=1)
-        # multi_representation = torch.concat((embedding_tensor, share_features), dim=1)
         return embedding_tensor
 
     @staticmethod
@@ -452,86 +407,6 @@ class LMF_fusion(nn.Module):
         return output
 
 
-class LMF(nn.Module):
-    '''
-    Low-rank Multimodal Fusion
-    '''
-
-    def __init__(self, input_dims, rank, use_softmax=False):
-        '''
-        Args:
-            input_dims - a length-3 tuple, contains (audio_dim, video_dim, text_dim)
-            hidden_dims - another length-3 tuple, hidden dims of the sub-networks
-            text_out - int, specifying the resulting dimensions of the text subnetwork
-            dropouts - a length-4 tuple, contains (audio_dropout, video_dropout, text_dropout, post_fusion_dropout)
-            output_dim - int, specifying the size of output
-            rank - int, specifying the size of rank in LMF
-        Output:
-            (return value in forward) a scalar value between -3 and 3
-        '''
-        super(LMF, self).__init__()
-
-        # dimensions are specified in the order of audio, video and text
-        self.audio_in = input_dims
-        self.video_in = input_dims
-        self.text_in = input_dims
-
-        self.output_dim = input_dims
-        self.rank = rank
-        self.use_softmax = use_softmax
-
-        # self.post_fusion_layer_1 = nn.Linear((self.text_out + 1) * (self.video_hidden + 1) * (self.audio_hidden + 1), self.post_fusion_dim)
-        self.audio_factor = nn.Parameter(torch.Tensor(self.rank, self.audio_in + 1, self.output_dim))
-        self.video_factor = nn.Parameter(torch.Tensor(self.rank, self.video_in + 1, self.output_dim))
-        self.text_factor = nn.Parameter(torch.Tensor(self.rank, self.text_in + 1, self.output_dim))
-        self.fusion_weights = nn.Parameter(torch.Tensor(1, self.rank))
-        self.fusion_bias = nn.Parameter(torch.Tensor(1, self.output_dim))
-
-        # init teh factors
-        nn.init.xavier_normal(self.audio_factor)
-        nn.init.xavier_normal(self.video_factor)
-        nn.init.xavier_normal(self.text_factor)
-        nn.init.xavier_normal(self.fusion_weights)
-        self.fusion_bias.data.fill_(0)
-
-    def forward(self, audio_x, video_x, text_x):
-        '''
-        Args:
-            audio_x: tensor of shape (batch_size, audio_in)
-            video_x: tensor of shape (batch_size, video_in)
-            text_x: tensor of shape (batch_size, sequence_len, text_in)
-        '''
-        audio_h = audio_x
-        video_h = video_x
-        text_h = text_x
-        batch_size = audio_h.data.shape[0]
-
-        # next we perform low-rank multimodal fusion
-        # here is a more efficient implementation than the one the paper describes
-        # basically swapping the order of summation and elementwise product
-        if audio_h.is_cuda:
-            DTYPE = torch.cuda.FloatTensor
-        else:
-            DTYPE = torch.FloatTensor
-
-        _audio_h = torch.cat((torch.ones(batch_size, 1).type(DTYPE), audio_h), dim=1)
-        _video_h = torch.cat((torch.ones(batch_size, 1).type(DTYPE), video_h), dim=1)
-        _text_h = torch.cat((torch.ones(batch_size, 1).type(DTYPE), text_h), dim=1)
-
-        fusion_audio = torch.matmul(_audio_h, self.audio_factor)
-        fusion_video = torch.matmul(_video_h, self.video_factor)
-        fusion_text = torch.matmul(_text_h, self.text_factor)
-        fusion_zy = fusion_audio * fusion_video * fusion_text
-
-        # output = torch.sum(fusion_zy, dim=0).squeeze()
-        # use linear transformation instead of simple summation, more flexibility
-        output = torch.matmul(self.fusion_weights, fusion_zy.permute(1, 0, 2)).squeeze() + self.fusion_bias
-        output = output.view(-1, self.output_dim)
-        if self.use_softmax:
-            output = F.softmax(output)
-        return output
-
-
 class DownStream_predictor(nn.Module):
     def __init__(self, modal_num, modal_dim, latent_dim, hidden_dim, pretrain_model_path, task, omics_data, fixed, omics):
         super(DownStream_predictor, self).__init__()
@@ -542,9 +417,7 @@ class DownStream_predictor(nn.Module):
             print('load pretrain model')
             model_pretrain_dict = torch.load(pretrain_model_path, map_location='cpu')
             self.cross_encoders.load_state_dict(model_pretrain_dict)
-        #   分类器
-        # self.lmf = LMF(64, 16)
-        self.lmf_fusion = LMF_fusion(64, 16, self.k)
+
         self.downstream_predictor = nn.Sequential(nn.Linear(latent_dim * self.k, 128),
                                                   nn.BatchNorm1d(128),
                                                   nn.Dropout(0.2),
@@ -650,3 +523,98 @@ class PanCancer_SNN_predictor(nn.Module):
             embedding_tensor = torch.concat((embedding_tensor, embedding), dim=1)
         output = self.predictor(embedding_tensor)
         return output
+
+
+class DualAutoEncoder(nn.Module):
+    def __init__(self, input_dims_a, input_dims_b, hidden_dims, latent_dim):
+        super(DualAutoEncoder, self).__init__()
+
+        # Encoder for Modality A
+        self.encoderA = nn.Sequential(
+            nn.Linear(input_dims_a, hidden_dims[0]),
+            nn.BatchNorm1d(hidden_dims[0]),
+            nn.ReLU(),
+            nn.Linear(hidden_dims[0], hidden_dims[1]),
+            nn.BatchNorm1d(hidden_dims[1]),
+            nn.ReLU(),
+            nn.Linear(hidden_dims[1], latent_dim)
+        )
+
+        # Decoder for Modality A
+        self.decoderA = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dims[1]),
+            nn.BatchNorm1d(hidden_dims[1]),
+            nn.ReLU(),
+            nn.Linear(hidden_dims[1], hidden_dims[0]),
+            nn.BatchNorm1d(hidden_dims[0]),
+            nn.ReLU(),
+            nn.Linear(hidden_dims[0], input_dims_a)
+        )
+
+        # Encoder for Modality B
+        self.encoderB = nn.Sequential(
+            nn.Linear(input_dims_b, hidden_dims[0]),
+            nn.BatchNorm1d(hidden_dims[0]),
+            nn.ReLU(),
+            nn.Linear(hidden_dims[0], hidden_dims[1]),
+            nn.BatchNorm1d(hidden_dims[1]),
+            nn.ReLU(),
+            nn.Linear(hidden_dims[1], latent_dim)
+        )
+
+        # Decoder for Modality B
+        self.decoderB = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dims[1]),
+            nn.BatchNorm1d(hidden_dims[1]),
+            nn.ReLU(),
+            nn.Linear(hidden_dims[1], hidden_dims[0]),
+            nn.BatchNorm1d(hidden_dims[0]),
+            nn.ReLU(),
+            nn.Linear(hidden_dims[0], input_dims_b)
+        )
+
+    def forward(self, x_a, x_b):
+        # Encode inputs from both modalities
+        z_a = self.encoderA(x_a)
+        z_b = self.encoderB(x_b)
+
+        # Decode into both modalities from each latent representation
+        recon_a_from_a = self.decoderA(z_a)
+        recon_b_from_a = self.decoderB(z_a)
+        recon_a_from_b = self.decoderA(z_b)
+        recon_b_from_b = self.decoderB(z_b)
+
+        recon_a_loss = reconstruction_loss(x_a, recon_a_from_a, 1, 'gaussian') + reconstruction_loss(x_a, recon_a_from_b, 1, 'gaussian')
+        recon_b_loss = reconstruction_loss(x_b, recon_b_from_b, 1, 'gaussian') + reconstruction_loss(x_b, recon_b_from_a, 1, 'gaussian')
+
+        return recon_a_from_a, recon_b_from_a, recon_a_from_b, recon_b_from_b, recon_a_loss, recon_b_loss
+
+
+def calculate_r_squared_torch(y_true, y_pred):
+    """
+    使用PyTorch计算每个特征的R平方值。
+    :param y_true: 真实值，形状为(n_samples, n_features)，PyTorch张量
+    :param y_pred: 预测值，形状为(n_samples, n_features)，PyTorch张量
+    :return: 每个特征的R平方值，形状为(n_features,)，PyTorch张量
+    """
+    # 计算总平方和 (TSS)
+    tss = torch.sum((y_true - torch.mean(y_true, axis=0))**2, axis=0)
+    # 计算残差平方和 (RSS)
+    rss = torch.sum((y_true - y_pred)**2, axis=0)
+    # 计算R平方值
+    r_squared = 1 - (rss / tss)
+    return r_squared
+
+
+def calc_frac(x1_mat, x2_mat):  # function to calculate FOSCTTM values
+    nsamp = x1_mat.shape[0]
+    total_count = nsamp * (nsamp - 1)
+    rank = 0
+    for row_idx in range(nsamp):
+        euc_dist = np.sqrt(np.sum(np.square(np.subtract(x1_mat[row_idx, :], x2_mat)), axis=1))
+        true_nbr = euc_dist[row_idx]
+        sort_euc_dist = sorted(euc_dist)
+        rank += sort_euc_dist.index(true_nbr)
+
+    frac = float(rank) / total_count
+    return frac
