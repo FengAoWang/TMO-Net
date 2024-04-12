@@ -228,9 +228,7 @@ class TMO_Net(nn.Module):
         cross_elbo, cross_infer_dsc_loss, pearson_scores, input_data, reconstruct_data = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
         cross_infer_loss = self.cross_infer_loss(output, omics, mask_k)
         dsc_loss = self.adversarial_loss(batch_size, output, omics, mask_k)
-        generate_loss = self_elbo + cross_elbo + cross_infer_loss * cross_infer_loss
-        # - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
-        # generate_loss = self_elbo - dsc_loss * 0.1 - cross_infer_dsc_loss * 0.1
+        generate_loss = self_elbo + 0.1 * (cross_elbo + cross_infer_loss * cross_infer_loss) - (dsc_loss + cross_infer_dsc_loss) * 0.01
         return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, pearson_scores, input_data, reconstruct_data
 
     def compute_dsc_loss(self, input_x, batch_size, omics):
