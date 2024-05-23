@@ -116,3 +116,114 @@ class Drug_response_Dataset(Dataset):
         response_tensor = torch.Tensor([0] if response == 'R' else [1])
 
         return omics_data, response_tensor
+
+class MetaBric_Dataset(Dataset):
+    def __init__(self, omics_paths, omics_types, label_path): 
+        super(MetaBric_Dataset, self).__init__()
+        assert len(omics_paths) == len(omics_types), "Number of omics paths and types must match"
+        
+        # self.omics = {omics_type: pd.read_csv(path,index_col=0) for omics_type, path in zip(omics_types, omics_paths)}
+        self.omics = {omics_type: pd.read_csv(path) for omics_type, path in zip(omics_types, omics_paths)}
+        self.clinical_data = pd.read_csv(label_path,sep='\t')
+    
+    def __len__(self):
+        return len(self.clinical_data)
+    
+    def __getitem__(self,idx):
+
+        ERStatus = torch.LongTensor([self.clinical_data['ERStatus'].loc[idx]])
+        HER2Status = torch.LongTensor([self.clinical_data['HER2Status'].loc[idx]])
+        Pam50Subtype = torch.LongTensor([self.clinical_data['Pam50Subtype'].loc[idx]])
+        Pam50SubtypeSingleLuminal = torch.LongTensor([self.clinical_data['Pam50SubtypeSingleLuminal'].loc[idx]])
+        BasalNonBasal = torch.LongTensor([self.clinical_data['BasalNonBasal'].loc[idx]])
+        Luminal = torch.LongTensor([self.clinical_data['Luminal'].loc[idx]])
+
+
+        omics_data = {}
+        for omics_type, df in self.omics.items():
+            # print(omics_type, 'ID' in df.columns, df.shape)
+            if 'ID' in df.columns:
+                del df['ID']
+            omics_data[omics_type] = torch.Tensor(df.iloc[idx].values.tolist()[1:]) 
+
+        return omics_data, ERStatus, HER2Status, Pam50Subtype, BasalNonBasal, Pam50SubtypeSingleLuminal, Luminal
+
+
+class MetastaticDataset(Dataset):
+    def __init__(self, omics_paths_prim, omics_paths_meta, omics_types, split_path, fold, label_path, is_test=False):
+        assert len(omics_paths_prim) == len(omics_types), "Number of omics paths and types must match"
+        assert len(omics_paths_meta) == len(omics_types), "Number of omics paths and types must match"
+
+        split = joblib.load(split_path)
+        self.label = joblib.load(label_path)
+        if not is_test:
+            self.samples = split[f'fold{fold}_train']
+        else:
+            self.samples = split[f'fold{fold}_test']
+        # Select data for the specified fold and cancer types
+        self.omics_prim = {}
+        for omics_type, path in zip(omics_types, omics_paths_prim):
+            df = pd.read_csv(path,index_col=0)
+            self.omics_prim[omics_type] = df
+
+        self.omics_meta = {}
+        for omics_type, path in zip(omics_types, omics_paths_meta):
+            df = pd.read_csv(path,index_col=0)
+            self.omics_meta[omics_type] = df
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        # Get the index of the sample from the training data
+        sample_id = self.samples[idx]
+        omics_data = {}
+
+        if self.label[sample_id] == 0:
+            for omics_type, df in self.omics_prim.items():
+                ts = torch.Tensor(np.nan_to_num(np.array(df[df['ID'].str[:12] == sample_id].values.tolist()[0][1:])))
+                omics_data[omics_type] = ts
+            cancer_type = torch.LongTensor([0])
+
+        if self.label[sample_id] == 1:
+            for omics_type, df in self.omics_meta.items():
+                ts = torch.Tensor(np.nan_to_num(np.array(df[df['ID'].str[:12] == sample_id].values.tolist()[0][1:])))
+                omics_data[omics_type] = ts
+            cancer_type = torch.LongTensor([1])
+
+        if self.label[sample_id] == 2:
+            for omics_type, df in self.omics_prim.items():
+                ts = torch.Tensor(np.nan_to_num(np.array(df[df['ID'].str[:12] == sample_id].values.tolist()[0][1:])))
+                omics_data[omics_type] = ts
+            cancer_type = torch.LongTensor([1])
+
+        return omics_data, cancer_type
+
+class CPTAC_BRCA_Dataset(Dataset):
+    def __init__(self, omics_paths, omics_types, label_path, split_path, fold_i, mode='train'):
+        super(CPTAC_BRCA_Dataset, self).__init__()
+        self.omics = {omics_type: pd.read_csv(path,index_col=0) for omics_type, path, in zip (omics_types,omics_paths)}
+        self.cases = joblib.load(split_path)[f"{mode}_{fold_i}"]
+        self.clinical = pd.read_csv(label_path,index_col=1)
+        self.Pam50dict = {
+            'Normal-like':1,
+            'Basal':1,
+            'Her2':3,
+            'LumA':0,
+            'LumB':2 
+        }
+    
+    def __len__(self):
+        return len(self.cases)
+    
+    def __getitem__(self,idx):
+        ERStatus = torch.LongTensor([self.clinical.loc[self.cases[idx]]["ER.Updated.Clinical.Status"]])
+        HER2Status = torch.LongTensor([self.clinical.loc[self.cases[idx]]["Her2.Updated.Clinical.Status"]])
+        Pam50Subtype = torch.LongTensor([self.Pam50dict[self.clinical.loc[self.cases[idx]]["PAM50"]]])
+
+        omics_data = {}
+        for omics_type, df in self.omics.items():
+            if 'ID' in df.columns:
+                del df['ID']
+            omics_data[omics_type] = torch.Tensor(df.loc[self.cases[idx]].values.tolist())
+        return omics_data, ERStatus, HER2Status, Pam50Subtype 
