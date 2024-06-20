@@ -28,16 +28,16 @@ def un_dfs_freeze(model):
 
 
 def product_of_experts(mu_set_, log_var_set_):
-    tmp = 1.
+    tmp = 0
     for i in range(len(mu_set_)):
-        tmp += torch.div(1, torch.exp(log_var_set_[i]) ** 2)
+        tmp += torch.div(1, torch.exp(log_var_set_[i]))
 
     poe_var = torch.div(1., tmp)
-    poe_log_var = torch.log(torch.sqrt(poe_var))
+    poe_log_var = torch.log(poe_var)
 
     tmp = 0.
     for i in range(len(mu_set_)):
-        tmp += torch.div(1., torch.exp(log_var_set_[i]) ** 2) * mu_set_[i]
+        tmp += torch.div(1., torch.exp(log_var_set_[i])) * mu_set_[i]
     poe_mu = poe_var * tmp
     return poe_mu, poe_log_var
 
@@ -97,6 +97,7 @@ def corrected_pearson_correlation_rows_tensor(A, B):
 class encoder(nn.Module):
     def __init__(self, input_dim, latent_dim, hidden_dim):
         super(encoder, self).__init__()
+
         self.encoder = nn.Sequential(nn.Linear(input_dim, hidden_dim[0]),
                                      nn.BatchNorm1d(hidden_dim[0]),
                                      # nn.Dropout(0.2),
@@ -129,10 +130,6 @@ class encoder(nn.Module):
         std = torch.exp(logvar / 2)  # in log-space, squareroot is divide by two
         epsilon = torch.randn_like(std)
         return epsilon * std + mean
-
-    def decode(self, latent_z):
-        cross_recon_x = self.decoder(latent_z)
-        return cross_recon_x
 
     def forward(self, x):
         x = self.encoder(x)
