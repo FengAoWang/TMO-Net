@@ -352,7 +352,7 @@ def TCGA_Dataset_survival_prediction(fold, epochs, cancer_types, pretrain_model_
         test_dataloader = DataLoader(test_dataset, batch_size=1)
         task = {'output_dim': 1}
         model = DownStream_predictor(4, [6016, 6617, 4539, 7460], 64, [2048, 1024, 512],
-                                     pretrain_model_path, task, omics_data_type, fixed)
+                                     [512, 2048], pretrain_model_path, task, omics_data_type, fixed, omics, 0.01)
         torch.cuda.set_device(device_id)
         model.cuda()
         param_groups = [
@@ -501,7 +501,7 @@ def TCGA_Dataset_classification(fold, epochs, pretrain_model_path, fixed, device
     task = {'output_dim': 32}
 
     model = DownStream_predictor(4, [6016, 6617, 4539, 7460], 64, [2048, 1024, 512],
-                                 pretrain_model_path, task, omics_data_type, fixed)
+                                 [512, 2048], pretrain_model_path, task, omics_data_type, fixed, omics, 0.01)
 
     torch.cuda.set_device(device_id)
     model.cuda()

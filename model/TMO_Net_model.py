@@ -185,7 +185,7 @@ class TMO_Net(nn.Module):
     def forward(self, input_x, omics):
         keys = omics.keys()
         values = list(omics.values())
-        output = [[0 for i in range(self.k)] for j in range(self.k)]
+        output = [[0 for _ in range(self.k)] for _ in range(self.k)]
 
         for (item, i) in enumerate(values):
             for j in range(self.k):
@@ -198,7 +198,7 @@ class TMO_Net(nn.Module):
         values = list(omics.values())
         # mask_k = random.randint(0, self.k*5)
         mask_k = 10
-        output = [[0 for i in range(self.k)] for j in range(self.k)]
+        output = [[0 for _ in range(self.k)] for _ in range(self.k)]
         for (item, i) in enumerate(values):
             for j in range(self.k):
                 output[i][j] = self.encoders[i][j](input_x[item])
@@ -211,8 +211,7 @@ class TMO_Net(nn.Module):
         return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss
 
     def compute_dsc_loss(self, input_x, batch_size, omics):
-        # mask_k = random.randint(0, self.k*5)
-        mask_k = 10
+        mask_k = random.randint(0, self.k*5)
         values = list(omics.values())
         output = [[0 for i in range(self.k)] for j in range(self.k)]
         for (item, i) in enumerate(values):
