@@ -6,22 +6,9 @@ from lifelines.utils import concordance_index
 from torch.distributions import Normal, kl_divergence
 
 
-def loss_func(recon_x, x, mu, logvar):
-    BCE = F.binary_cross_entropy(recon_x, x, reduction='mean')
-    batch_size = mu.shape[0]
-    rl = (recon_x - x).pow(2).sum() / batch_size
-    KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    return rl + KLD
-
-
 def KL_loss(mu, logvar, beta, c=0.0):
     # KL divergence loss
     KLD_1 = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    ############################
-
-    # KLD_2 = torch.distributions.kl.kl_divergence(z_dist, prior_dist)
-    # KLD_2 = KLD_2.sum(1).mean()
-    # KLD_2 = beta * (KLD_2 - c).abs()
     return beta * KLD_1
 
 
@@ -31,34 +18,28 @@ def KL_divergence(mu1, mu2, log_sigma1, log_sigma2):
 
     # 计算KL损失
     kl_loss = kl_divergence(p, q).mean()
-
-    # sigma1 = torch.exp(log_sigma1)
-    # sigma2 = torch.exp(log_sigma2)
-    #
-    # sigma1_inv = torch.inverse(sigma1)
-    # sigma2_det = torch.det(sigma2)
-    # sigma1_det = torch.det(sigma1)
-    # mu_diff = mu2 - mu1
-    #
-    # tr_term = torch.trace(torch.matmul(sigma1_inv, sigma2))
-    # quad_term = torch.matmul(torch.matmul(mu_diff.T, sigma1_inv), mu_diff)
-    # logdet_term = torch.log(sigma2_det / sigma1_det)
-    #
-    # kl_div = - 0.5 * (tr_term + quad_term - mu1.shape[0] - logdet_term)
-
     return kl_loss
 
 
 def reconstruction_loss(recon_x, x, recon_param, dist):
-    BCE = torch.nn.BCEWithLogitsLoss(reduction="mean")
-    batch_size = recon_x.shape[0]
+    batch_size = x.size(0)
     if dist == 'bernoulli':
-        recons_loss = BCE(recon_x, x)
+        BCE = nn.BCEWithLogitsLoss(reduction='sum')
+        recons_loss = BCE(recon_x, x) / batch_size
     elif dist == 'gaussian':
-        x_recons = recon_x
-        recons_loss = F.mse_loss(x_recons, x).mean()
+        mse = nn.MSELoss(reduction='sum')
+        recons_loss = mse(recon_x, x)
     elif dist == 'F2norm':
         recons_loss = torch.norm(recon_x-x, p=2)
+    elif dist == 'prob':
+        recons_loss = recon_x.log_prob(x).sum(dim=1).mean(dim=0)
+    elif dist == 'Poisson':
+        pois_loss = nn.PoissonNLLLoss(full=True, reduction='sum')
+        recons_loss = pois_loss(recon_x, x)
+    elif dist == 'ce':
+        x = torch.argmax(x, dim=1)
+        ce_loss = nn.CrossEntropyLoss(reduction='sum')
+        recons_loss = ce_loss(recon_x, x)
     else:
         raise AttributeError("invalid dist")
 

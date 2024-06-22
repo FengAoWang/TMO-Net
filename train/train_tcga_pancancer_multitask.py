@@ -3,7 +3,7 @@ import sys
 sys.path.append('/home/wfa/project/clue')
 import torch
 from dataset.dataset import CancerDataset
-from model.clue_model import Clue_model, DownStream_predictor, dfs_freeze, un_dfs_freeze
+from model.TMO_Net_model import TMO_Net, DownStream_predictor, dfs_freeze, un_dfs_freeze
 import random
 import numpy as np
 import pandas as pd
@@ -17,7 +17,6 @@ import torch.multiprocessing as mp
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from LogME import LogME
 logme = LogME(regression=False)
-
 
 
 def set_seed(seed):
@@ -206,7 +205,8 @@ def TCGA_Dataset_pretrain(fold, epochs, device_id, cancer_types=None):
     train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True)
     test_dataloader = DataLoader(test_dataset, batch_size=64)
 
-    model = Clue_model(4, [6016, 6617, 4539, 7460], 64, [2048, 1024, 512], omics_data_type)
+    model = TMO_Net(4, [6016, 6617, 4539, 7460], 64,
+                    [2048, 512], [512, 2048], omics_data_type, 0.01)
     torch.cuda.set_device(device_id)
     model.cuda()
     print(len(train_dataset))
@@ -551,9 +551,10 @@ def multiprocessing_train_fold(function, func_args_list):
         p.join()
 
 
-class_func_args = [(i, all_epochs, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
-cancer_type_list = ['LGG', 'BLCA', 'BRCA', 'COAD', 'HNSC', 'KIRC', 'LIHC', 'LUAD', 'STAD']
-survival_func_args = [(i, all_epochs, cancer_type_list, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
-pretrain_func_args = [(i, all_epochs, device_ids[i]) for i in range(folds)]
-
-multiprocessing_train_fold(TCGA_Dataset_classification, class_func_args)
+TCGA_Dataset_pretrain(0, 10, 0)
+# class_func_args = [(i, all_epochs, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
+# cancer_type_list = ['LGG', 'BLCA', 'BRCA', 'COAD', 'HNSC', 'KIRC', 'LIHC', 'LUAD', 'STAD']
+# survival_func_args = [(i, all_epochs, cancer_type_list, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
+# pretrain_func_args = [(i, all_epochs, device_ids[i]) for i in range(folds)]
+#
+# multiprocessing_train_fold(TCGA_Dataset_classification, class_func_args)

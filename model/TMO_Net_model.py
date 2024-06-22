@@ -42,86 +42,54 @@ def product_of_experts(mu_set_, log_var_set_):
     return poe_mu, poe_log_var
 
 
-def r_squared_pytorch(y_actual, y_predicted):
-    # Ensure the input tensors are of correct shape
-    if y_actual.shape != y_predicted.shape:
-        raise ValueError("Shapes of y_actual and y_predicted do not match.")
+class LinearLayer(nn.Module):
+    def __init__(self,
+                 input_dim: int,
+                 output_dim: int,
+                 dropout: float = 0.2,
+                 batchnorm: bool = False,
+                 activation=None):
+        super(LinearLayer, self).__init__()
+        self.linear_layer = nn.Linear(input_dim, output_dim)
 
-    # Calculate the mean of the observed values for each dimension
-    y_mean = y_actual.mean(dim=0)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else None
+        self.batchnorm = nn.BatchNorm1d(output_dim) if batchnorm else None
 
-    # Calculate the total sum of squares (SS_tot) for each dimension
-    ss_tot = ((y_actual - y_mean) ** 2).sum(dim=0)
+        self.activation = None
+        if activation is not None:
+            if activation == 'relu':
+                self.activation = F.relu
+            elif activation == 'sigmoid':
+                self.activation = torch.sigmoid
+            elif activation == 'tanh':
+                self.activation = torch.tanh
+            elif activation == 'leakyrelu':
+                self.activation = torch.nn.LeakyReLU()
 
-    # Calculate the residual sum of squares (SS_res) for each dimension
-    ss_res = ((y_actual - y_predicted) ** 2).sum(dim=0)
-
-    # Calculate the R^2 value for each dimension
-    r2_values = 1 - (ss_res / ss_tot)
-
-    return r2_values
-
-
-def cosine_similarity_rows_tensor(A, B):
-    # Calculate the dot product between corresponding rows of A and B
-    dot_product = torch.sum(A * B, dim=1)
-
-    # Calculate the L2 norm for A and B
-    norm_A = torch.norm(A, dim=1)
-    norm_B = torch.norm(B, dim=1)
-
-    # Calculate the cosine similarity for corresponding rows
-    cosine_sim = dot_product / (norm_A * norm_B)
-
-    return cosine_sim
-
-
-def corrected_pearson_correlation_rows_tensor(A, B):
-    # Calculate means of A and B
-    mean_A = torch.mean(A, dim=1, keepdim=True)
-    mean_B = torch.mean(B, dim=1, keepdim=True)
-
-    # Calculate the covariance between A and B
-    covariance = torch.sum((A - mean_A) * (B - mean_B), dim=1) / (A.shape[1] - 1)
-
-    # Calculate the standard deviations of A and B
-    std_A = torch.std(A, dim=1, unbiased=True)
-    std_B = torch.std(B, dim=1, unbiased=True)
-
-    # Calculate the Pearson correlation coefficient for corresponding rows
-    correlation = covariance / (std_A * std_B)
-
-    return correlation
+    def forward(self, input_x):
+        x = self.linear_layer(input_x)
+        if self.dropout is not None:
+            x = self.dropout(x)
+        if self.batchnorm is not None:
+            x = self.batchnorm(x)
+        if self.activation is not None:
+            x = self.activation(x)
+        return x
 
 
 class encoder(nn.Module):
-    def __init__(self, input_dim, latent_dim, hidden_dim):
+    def __init__(self, input_dim, latent_dim, hidden_dims, activation):
         super(encoder, self).__init__()
+        self.FeatureEncoder = nn.ModuleList([LinearLayer(input_dim, hidden_dims[0],
+                                                         batchnorm=True, activation=activation)])
+        for i in range(len(hidden_dims) - 1):
+            self.FeatureEncoder.append(LinearLayer(hidden_dims[i], hidden_dims[i+1],
+                                                   batchnorm=True, activation=activation))
 
-        self.encoder = nn.Sequential(nn.Linear(input_dim, hidden_dim[0]),
-                                     nn.BatchNorm1d(hidden_dim[0]),
-                                     # nn.Dropout(0.2),
-                                     nn.ReLU(),
-
-                                     nn.Linear(hidden_dim[0], hidden_dim[1]),
-                                     nn.BatchNorm1d(hidden_dim[1]),
-                                     # nn.Dropout(0.2),
-                                     nn.ReLU(),
-
-                                     nn.Linear(hidden_dim[1], hidden_dim[2]),
-                                     nn.BatchNorm1d(hidden_dim[2]),
-                                     # nn.Dropout(0.2),
-                                     nn.ReLU(),
-
-                                     nn.Linear(hidden_dim[2], latent_dim),
-                                     nn.BatchNorm1d(latent_dim),
-                                     # nn.Dropout(0.2),
-                                     nn.ReLU())
-
-        self.mu_predictor = nn.Sequential(nn.Linear(latent_dim, latent_dim),
+        self.mu_predictor = nn.Sequential(nn.Linear(hidden_dims[-1], latent_dim),
                                           nn.ReLU()
                                           )
-        self.log_var_predictor = nn.Sequential(nn.Linear(latent_dim, latent_dim),
+        self.log_var_predictor = nn.Sequential(nn.Linear(hidden_dims[-1], latent_dim),
                                                nn.ReLU()
                                                )
 
@@ -132,49 +100,60 @@ class encoder(nn.Module):
         return epsilon * std + mean
 
     def forward(self, x):
-        x = self.encoder(x)
+        for layer in self.FeatureEncoder:
+            x = layer(x)
         mu = self.mu_predictor(x)
         log_var = self.log_var_predictor(x)
         latent_z = self.reparameterize(mu, log_var)
-        # recon_x = self.decoder(latent_z)
         return latent_z, mu, log_var
 
 
 class decoder(nn.Module):
-    def __init__(self, latent_dim, input_dim, hidden_dim):
+    def __init__(self, latent_dim, output_dim, hidden_dims, activation):
         super(decoder, self).__init__()
-        self.decoder = nn.Sequential(nn.Linear(latent_dim, hidden_dim[2]),
-                                     nn.BatchNorm1d(hidden_dim[2]),
-                                     nn.Dropout(0.2),
-                                     nn.LeakyReLU(),
+        self.FeatureDecoder = nn.ModuleList([LinearLayer(latent_dim, hidden_dims[0],
+                                                         dropout=0.1, batchnorm=True,
+                                                         activation=activation)])
+        for i in range(len(hidden_dims) - 1):
+            self.FeatureDecoder.append(LinearLayer(hidden_dims[i], hidden_dims[i+1],
+                                                   dropout=0.1, batchnorm=True,
+                                                   activation=activation))
 
-                                     nn.Linear(hidden_dim[2], hidden_dim[1]),
-                                     nn.BatchNorm1d(hidden_dim[1]),
-                                     nn.Dropout(0.2),
-                                     nn.LeakyReLU(),
-
-                                     nn.Linear(hidden_dim[1], hidden_dim[0]),
-                                     nn.BatchNorm1d(hidden_dim[0]),
-                                     nn.Dropout(0.2),
-                                     nn.LeakyReLU(),
-                                     nn.Linear(hidden_dim[0], input_dim),
-                                     )
+        self.ReconsPredictor = LinearLayer(hidden_dims[-1], output_dim)
 
     def forward(self, latent_z):
-        return self.decoder(latent_z)
+        for layer in self.FeatureDecoder:
+            latent_z = layer(latent_z)
+        DataRecons = self.ReconsPredictor(latent_z)
+        return DataRecons
 
 
 class TMO_Net(nn.Module):
-    def __init__(self, modal_num, modal_dim, latent_dim, hidden_dim, omics_data, pretrain=False):
+    def __init__(self,
+                 #  number of multimodal
+                 modal_num: int,
+                 #  multimodal dimension number list
+                 modal_dim: list[int],
+                 #  dimension of latent representation
+                 latent_dim: int,
+                 #  dimension of encoder hidden layer
+                 encoder_hidden_dims: list[int],
+                 #  dimension of decoder hidden layer
+                 decoder_hidden_dims: list[int],
+                 #  distribution/reconstruct loss of each modality
+                 omics_data_type: list[str],
+                 # weight of kl loss
+                 kl_loss_weight: float,
+                 pretrain=False):
         super(TMO_Net, self).__init__()
 
         self.k = modal_num
         self.encoders = nn.ModuleList(
-            nn.ModuleList([encoder(modal_dim[i], latent_dim, hidden_dim) for j in range(self.k)]) for i in
+            nn.ModuleList([encoder(modal_dim[i], latent_dim, encoder_hidden_dims, 'relu') for j in range(self.k)]) for i in
             range(self.k))
-        self.self_decoders = nn.ModuleList([decoder(latent_dim, modal_dim[i], hidden_dim) for i in range(self.k)])
+        self.self_decoders = nn.ModuleList([decoder(latent_dim, modal_dim[i], decoder_hidden_dims, 'relu') for i in range(self.k)])
 
-        self.cross_decoders = nn.ModuleList([decoder(latent_dim, modal_dim[i], hidden_dim) for i in range(self.k)])
+        self.cross_decoders = nn.ModuleList([decoder(latent_dim, modal_dim[i], decoder_hidden_dims, 'relu') for i in range(self.k)])
 
         #   modality-invariant representation
         self.share_encoder = nn.Sequential(nn.Linear(latent_dim, latent_dim),
@@ -195,7 +174,10 @@ class TMO_Net(nn.Module):
         #   loss function hyperparameter
         self.loss_weight = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0], requires_grad=True)
 
-        self.omics_data = omics_data
+        self.omics_data_type = omics_data_type
+
+        self.kl_loss_weight = kl_loss_weight
+        #   choose to freeze the parameters of TMO-Net
         if pretrain:
             dfs_freeze(self.encoders)
 
@@ -222,11 +204,11 @@ class TMO_Net(nn.Module):
                 output[i][j] = self.encoders[i][j](input_x[item])
 
         self_elbo = self.self_elbo([output[i][i] for i in range(self.k)], input_x, omics, mask_k)
-        cross_elbo, cross_infer_dsc_loss, pearson_scores, input_data, reconstruct_data = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
+        cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
         cross_infer_loss = self.cross_infer_loss(output, omics, mask_k)
         dsc_loss = self.adversarial_loss(batch_size, output, omics, mask_k)
         generate_loss = self_elbo + 0.1 * (cross_elbo + cross_infer_loss * cross_infer_loss) - (dsc_loss + cross_infer_dsc_loss) * 0.01
-        return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss, pearson_scores, input_data, reconstruct_data
+        return generate_loss, self_elbo, cross_elbo, cross_infer_loss, dsc_loss
 
     def compute_dsc_loss(self, input_x, batch_size, omics):
         # mask_k = random.randint(0, self.k*5)
@@ -237,7 +219,7 @@ class TMO_Net(nn.Module):
             for j in range(self.k):
                 output[i][j] = self.encoders[i][j](input_x[item])
 
-        cross_elbo, cross_infer_dsc_loss, _, _, _ = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
+        cross_elbo, cross_infer_dsc_loss = self.cross_elbo(output, input_x, batch_size, omics, mask_k)
         dsc_loss = self.adversarial_loss(batch_size, output, omics, mask_k)
         return cross_infer_dsc_loss, dsc_loss
 
@@ -255,8 +237,8 @@ class TMO_Net(nn.Module):
             if i != mask_k:
                 latent_z, mu, log_var = input_x[i]
                 reconstruct_omic = self.self_decoders[i](latent_z)
-                self_vae_elbo += 0.01 * KL_loss(mu, log_var, 1.0) + reconstruction_loss(input_omic[item], reconstruct_omic, 1.0,
-                                                                                 self.omics_data[i])
+                self_vae_elbo += (self.kl_loss_weight * KL_loss(mu, log_var, 1.0) +
+                                  reconstruction_loss(input_omic[item], reconstruct_omic, 1.0, self.omics_data_type[i]))
         return self_vae_elbo
 
     def cross_elbo(self, input_x, input_omic, batch_size, omics, mask_k):
@@ -282,8 +264,9 @@ class TMO_Net(nn.Module):
                 if i in values:
                     reconstruct_omic = self.self_decoders[i](poe_latent_z)
 
-                    cross_elbo += 0.01 * KL_loss(poe_mu, poe_log_var, 1.0) + reconstruction_loss(input_omic[values.index(i)], reconstruct_omic, 1.0,
-                                                                                          self.omics_data[i])
+                    cross_elbo += (self.kl_loss_weight * KL_loss(poe_mu, poe_log_var, 1.0) +
+                                   reconstruction_loss(input_omic[values.index(i)],
+                                                       reconstruct_omic, 1.0, self.omics_data_type[i]))
                     cross_infer_loss += reconstruction_loss(real_mu, poe_mu, 1.0, 'gaussian')
 
                     cross_modal_KL_loss += KL_divergence(poe_mu, real_mu, poe_log_var, real_log_var)
@@ -297,7 +280,7 @@ class TMO_Net(nn.Module):
                     cross_modal_dsc_loss += F.cross_entropy(pred_infer_modal, infer_modal, reduction='none')
 
         cross_modal_dsc_loss = cross_modal_dsc_loss.sum(0) / (self.k * batch_size)
-        return cross_elbo + cross_infer_loss + 0.01 * cross_modal_KL_loss, cross_modal_dsc_loss
+        return cross_elbo + cross_infer_loss + self.kl_loss_weight * cross_modal_KL_loss, cross_modal_dsc_loss
 
     def cross_infer_loss(self, input_x, omics, mask_k):
         values = list(omics.values())
@@ -376,38 +359,12 @@ class TMO_Net(nn.Module):
         return positive_loss + negative_loss
 
 
-class LMF_fusion(nn.Module):
-    def __init__(self, input_dim, ranks, modal_nums):
-        super(LMF_fusion, self).__init__()
-        self.input_dim = input_dim
-        self.ranks = ranks
-        self.k = modal_nums
-
-        self.rank_weights = nn.ParameterList((nn.Parameter(torch.Tensor(self.ranks, self.input_dim, self.input_dim),
-                                                           requires_grad=True)) for i in range(self.k))
-        self.fusion_weights = nn.Parameter(torch.Tensor(1, self.ranks), requires_grad=True)
-        self.fusion_bias = nn.Parameter(torch.Tensor(1, self.input_dim), requires_grad=True)
-
-        for i in range(self.k):
-            nn.init.xavier_normal(self.rank_weights[i])
-        nn.init.xavier_normal(self.fusion_weights)
-
-    def forward(self, input_x):
-
-        fusion_features = [torch.matmul(input_x[i], self.rank_weights[i]) for i in range(self.k)]
-        fusion_features = reduce(torch.mul, fusion_features)
-        fusion_features = fusion_features.permute(1, 0, 2).squeeze()
-        output = torch.matmul(self.fusion_weights, fusion_features)
-        output = output.view(-1, self.input_dim)
-        return output
-
-
 class DownStream_predictor(nn.Module):
-    def __init__(self, modal_num, modal_dim, latent_dim, hidden_dim, pretrain_model_path, task, omics_data, fixed, omics):
+    def __init__(self, modal_num, modal_dim, latent_dim, encoder_hidden_dim, decoder_hidden_dim, pretrain_model_path, task, omics_data_type, fixed, omics, kl_loss_weight):
         super(DownStream_predictor, self).__init__()
         self.k = modal_num
         #   cross encoders
-        self.cross_encoders = TMO_Net(modal_num, modal_dim, latent_dim, hidden_dim, omics_data)
+        self.cross_encoders = TMO_Net(modal_num, modal_dim, latent_dim, encoder_hidden_dim, decoder_hidden_dim, omics_data_type, kl_loss_weight)
         if pretrain_model_path:
             print('load pretrain model')
             model_pretrain_dict = torch.load(pretrain_model_path, map_location='cpu')
@@ -586,12 +543,6 @@ class DualAutoEncoder(nn.Module):
 
 
 def calculate_r_squared_torch(y_true, y_pred):
-    """
-    使用PyTorch计算每个特征的R平方值。
-    :param y_true: 真实值，形状为(n_samples, n_features)，PyTorch张量
-    :param y_pred: 预测值，形状为(n_samples, n_features)，PyTorch张量
-    :return: 每个特征的R平方值，形状为(n_features,)，PyTorch张量
-    """
     # 计算总平方和 (TSS)
     tss = torch.sum((y_true - torch.mean(y_true, axis=0))**2, axis=0)
     # 计算残差平方和 (RSS)
@@ -613,3 +564,54 @@ def calc_frac(x1_mat, x2_mat):  # function to calculate FOSCTTM values
 
     frac = float(rank) / total_count
     return frac
+
+def r_squared_pytorch(y_actual, y_predicted):
+    # Ensure the input tensors are of correct shape
+    if y_actual.shape != y_predicted.shape:
+        raise ValueError("Shapes of y_actual and y_predicted do not match.")
+
+    # Calculate the mean of the observed values for each dimension
+    y_mean = y_actual.mean(dim=0)
+
+    # Calculate the total sum of squares (SS_tot) for each dimension
+    ss_tot = ((y_actual - y_mean) ** 2).sum(dim=0)
+
+    # Calculate the residual sum of squares (SS_res) for each dimension
+    ss_res = ((y_actual - y_predicted) ** 2).sum(dim=0)
+
+    # Calculate the R^2 value for each dimension
+    r2_values = 1 - (ss_res / ss_tot)
+
+    return r2_values
+
+
+def cosine_similarity_rows_tensor(A, B):
+    # Calculate the dot product between corresponding rows of A and B
+    dot_product = torch.sum(A * B, dim=1)
+
+    # Calculate the L2 norm for A and B
+    norm_A = torch.norm(A, dim=1)
+    norm_B = torch.norm(B, dim=1)
+
+    # Calculate the cosine similarity for corresponding rows
+    cosine_sim = dot_product / (norm_A * norm_B)
+
+    return cosine_sim
+
+
+def corrected_pearson_correlation_rows_tensor(A, B):
+    # Calculate means of A and B
+    mean_A = torch.mean(A, dim=1, keepdim=True)
+    mean_B = torch.mean(B, dim=1, keepdim=True)
+
+    # Calculate the covariance between A and B
+    covariance = torch.sum((A - mean_A) * (B - mean_B), dim=1) / (A.shape[1] - 1)
+
+    # Calculate the standard deviations of A and B
+    std_A = torch.std(A, dim=1, unbiased=True)
+    std_B = torch.std(B, dim=1, unbiased=True)
+
+    # Calculate the Pearson correlation coefficient for corresponding rows
+    correlation = covariance / (std_A * std_B)
+
+    return correlation
