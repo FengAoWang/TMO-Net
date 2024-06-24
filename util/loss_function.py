@@ -28,7 +28,7 @@ def reconstruction_loss(recon_x, x, recon_param, dist):
         recons_loss = BCE(recon_x, x) / batch_size
     elif dist == 'gaussian':
         mse = nn.MSELoss(reduction='sum')
-        recons_loss = mse(recon_x, x)
+        recons_loss = mse(recon_x, x) / batch_size
     elif dist == 'F2norm':
         recons_loss = torch.norm(recon_x-x, p=2)
     elif dist == 'prob':

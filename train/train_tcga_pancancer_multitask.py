@@ -1,6 +1,5 @@
 import os
 import sys
-sys.path.append('/home/wfa/project/clue')
 import torch
 from dataset.dataset import CancerDataset
 from model.TMO_Net_model import TMO_Net, DownStream_predictor, dfs_freeze, un_dfs_freeze
@@ -351,8 +350,8 @@ def TCGA_Dataset_survival_prediction(fold, epochs, cancer_types, pretrain_model_
         train_dataloader = DataLoader(train_dataset, batch_size=32, drop_last=True)
         test_dataloader = DataLoader(test_dataset, batch_size=1)
         task = {'output_dim': 1}
-        model = DownStream_predictor(4, [6016, 6617, 4539, 7460], 64, [2048, 1024, 512],
-                                     [512, 2048], pretrain_model_path, task, omics_data_type, fixed, omics, 0.01)
+        model = DownStream_predictor(4, [6016, 6617, 4539, 7460], 64, [512],
+                                     [512], pretrain_model_path, task, omics_data_type, fixed, omics, 0.01)
         torch.cuda.set_device(device_id)
         model.cuda()
         param_groups = [
@@ -551,7 +550,8 @@ def multiprocessing_train_fold(function, func_args_list):
         p.join()
 
 
-TCGA_Dataset_pretrain(0, 10, 0)
+#   example of TMO-Net pre-training
+TCGA_Dataset_pretrain(0, 50, 0)
 # class_func_args = [(i, all_epochs, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
 # cancer_type_list = ['LGG', 'BLCA', 'BRCA', 'COAD', 'HNSC', 'KIRC', 'LIHC', 'LUAD', 'STAD']
 # survival_func_args = [(i, all_epochs, cancer_type_list, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
