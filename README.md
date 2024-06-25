@@ -14,11 +14,13 @@ TMO-Net was implemented by Pytorch and details are the followning:
 Overview of TMO-Net research, including pan-cancer multi-omics collection, TMO-Net model architecture, pre-training and fine-tuning, and biological interpretation analysis.
 ![image](https://github.com/FengAoWang/TMO-Net/blob/master/figure1.png)
 
-## Dataset and Data processing
+## Dataset and Data pre-processing
 
 Multi-omics profiling of pre-training and downstream tasks were all downloaded from the public source. The processed data can be available at https://zenodo.org/records/10944664.
 
-
+## Run TMO-Net
+1. Download the processed multi-omics profile from the url of  zenodo and put them at the right directory.
+2. In the file of train/train_tcga_pancancer_multitask.py, we provide the training functions of TMO-Net pre-traing, pan-cancer classification and pan-cancer survival prediction with the default hyper-parameters. The examples setting of pre-training and fine-tuning TMO-Net are also displayed in the file. You can follow the examples to run TMO-Net.
 ## License
 
 This source code is licensed under the MIT license.
