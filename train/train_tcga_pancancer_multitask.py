@@ -1,5 +1,6 @@
 import os
 import sys
+sys.path.append('/home/wfa/project/clue')
 import torch
 from dataset.dataset import CancerDataset
 from model.TMO_Net_model import TMO_Net, DownStream_predictor, dfs_freeze, un_dfs_freeze
@@ -9,7 +10,7 @@ import pandas as pd
 from torch.utils.data import DataLoader
 import time
 from tqdm import tqdm
-from util.loss_function import cox_loss, c_index
+from util.loss_function import cox_loss
 from lifelines.utils import concordance_index
 import pickle
 import torch.multiprocessing as mp
@@ -126,8 +127,9 @@ def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimi
         print('dsc loss', total_dsc_loss / len(train_dataloader))
         Loss.append(total_dsc_loss / len(train_dataloader))
 
-        torch.save(pancancer_embedding, f'../model/model_dict/TCGA_pancancer_multi_train_embedding_fold{fold}_epoch{epoch}_v2.pt')
-        torch.save(all_label, f'../model/model_dict/TCGA_pancancer_train_fold{fold}_epoch{epoch}_all_label_v2.pt')
+        #
+        torch.save(pancancer_embedding, f'../model/model_dict/TCGA_pancancer_multi_train_embedding_fold{fold}_epoch{epoch}.pt')
+        torch.save(all_label, f'../model/model_dict/TCGA_pancancer_train_fold{fold}_epoch{epoch}_all_label.pt')
 
         pretrain_score = logme.fit(pancancer_embedding.detach().cpu().numpy(), all_label.cpu().numpy())
         print('pretrain score:', pretrain_score)
@@ -159,7 +161,6 @@ def val_pretrain(test_dataloader, model, epoch, cancer, fold, pretrain_omics):
                 for key in omics_data.keys():
                     omic = omics_data[key]
                     omic = omic.cuda()
-                    # print(omic.size())
                     input_x.append(omic)
 
                 cross_infer_dsc_loss, dsc_loss = model.compute_dsc_loss(input_x, os_event.size(0), pretrain_omics)
@@ -191,8 +192,11 @@ def val_pretrain(test_dataloader, model, epoch, cancer, fold, pretrain_omics):
             print('test dsc loss', total_dsc_loss / len(test_dataloader))
             Loss.append(total_dsc_loss / len(test_dataloader))
             torch.save(pancancer_embedding,
-                       f'../model/model_dict/TCGA_pancancer_multi_test_embedding_fold{fold}_epoch{epoch}_v2.pt')
-            torch.save(all_label, f'../model/model_dict/TCGA_pancancer_test_fold{fold}_epoch{epoch}_all_label_v2.pt')
+                       f'../model/model_dict/TCGA_pancancer_multi_test_embedding_fold{fold}_epoch{epoch}.pt')
+            torch.save(all_label, f'../model/model_dict/TCGA_pancancer_test_fold{fold}_epoch{epoch}_all_label.pt')
+
+            pretrain_score = logme.fit(pancancer_embedding.detach().cpu().numpy(), all_label.cpu().numpy())
+            print('pretrain score:', pretrain_score)
     return Loss
 
 
@@ -220,9 +224,6 @@ def TCGA_Dataset_pretrain(fold, epochs, device_id, cancer_types=None):
     for epoch in range(epochs):
 
         start_time = time.time()
-        # if epoch > 7:
-        #     for param_group in optimizer.param_groups:
-        #         param_group['lr'] = 0.000001
         loss, pretrain_score = train_pretrain(train_dataloader, model, epoch, 'PanCancer', optimizer, dsc_optimizer, fold, omics)
         Loss_list.append(loss)
         pretrain_score_list.append(pretrain_score)
@@ -263,7 +264,7 @@ def train_survival(train_dataloader, model, epoch, cancer, fold, optimizer, omic
             pretrain_loss, _, _, _, _ = model.cross_encoders.compute_generate_loss(input_x, os_event.size(0), omics)
             train_risk_score = torch.concat((train_risk_score, risk_score))
             CoxLoss = cox_loss(os_time, os_event, risk_score)
-            loss = CoxLoss + 0.6 * pretrain_loss
+            loss = CoxLoss
             total_loss += CoxLoss.item()
             optimizer.zero_grad()
             loss.backward()
@@ -286,12 +287,12 @@ def cal_c_index(dataloader, model, best_c_index, best_c_indices, omics):
     with torch.no_grad():
         risk_scores = {
             'all': torch.zeros((len(dataloader)), device=device),
-            'gex': torch.zeros((len(dataloader)), device=device),
-            'mut': torch.zeros((len(dataloader)), device=device),
-            'cnv': torch.zeros((len(dataloader)), device=device),
-            'gex_cnv': torch.zeros((len(dataloader)), device=device),
-            'gex_mut': torch.zeros((len(dataloader)), device=device),
-            'cnv_mut': torch.zeros((len(dataloader)), device=device),
+            # 'gex': torch.zeros((len(dataloader)), device=device),
+            # 'mut': torch.zeros((len(dataloader)), device=device),
+            # 'cnv': torch.zeros((len(dataloader)), device=device),
+            # 'gex_cnv': torch.zeros((len(dataloader)), device=device),
+            # 'gex_mut': torch.zeros((len(dataloader)), device=device),
+            # 'cnv_mut': torch.zeros((len(dataloader)), device=device),
         }
 
         censors = torch.zeros((len(dataloader)))
@@ -305,22 +306,21 @@ def cal_c_index(dataloader, model, best_c_index, best_c_indices, omics):
 
             survival_risk = model(input_x, os_event.size(0), omics)
 
-            gex_survival_risk = model(input_x, os_event.size(0), {'gex': 0})
-            mut_survival_risk = model([input_x[2]], os_event.size(0), {'mut': 2})
-            cnv_survival_risk = model([input_x[3]], os_event.size(0), {'cnv': 3})
-
-            gex_cnv_survival_risk = model([input_x[0], input_x[3]], os_event.size(0), {'gex': 0, 'cnv': 3})
-            gex_mut_survival_risk = model([input_x[0], input_x[2]], os_event.size(0), {'gex': 0, 'mut': 2})
-            cnv_mut_survival_risk = model([input_x[2], input_x[3]], os_event.size(0), {'mut': 2, 'cnv': 3})
-
-            risk_scores['gex'][i] = gex_survival_risk
-            risk_scores['mut'][i] = mut_survival_risk
-            risk_scores['cnv'][i] = cnv_survival_risk
-            risk_scores['gex_mut'][i] = gex_mut_survival_risk
-            risk_scores['gex_cnv'][i] = gex_cnv_survival_risk
-            risk_scores['cnv_mut'][i] = cnv_mut_survival_risk
+            # gex_survival_risk = model(input_x, os_event.size(0), {'gex': 0})
+            # mut_survival_risk = model([input_x[2]], os_event.size(0), {'mut': 2})
+            # cnv_survival_risk = model([input_x[3]], os_event.size(0), {'cnv': 3})
+            #
+            # gex_cnv_survival_risk = model([input_x[0], input_x[3]], os_event.size(0), {'gex': 0, 'cnv': 3})
+            # gex_mut_survival_risk = model([input_x[0], input_x[2]], os_event.size(0), {'gex': 0, 'mut': 2})
+            # cnv_mut_survival_risk = model([input_x[2], input_x[3]], os_event.size(0), {'mut': 2, 'cnv': 3})
+            #
+            # risk_scores['gex'][i] = gex_survival_risk
+            # risk_scores['mut'][i] = mut_survival_risk
+            # risk_scores['cnv'][i] = cnv_survival_risk
+            # risk_scores['gex_mut'][i] = gex_mut_survival_risk
+            # risk_scores['gex_cnv'][i] = gex_cnv_survival_risk
+            # risk_scores['cnv_mut'][i] = cnv_mut_survival_risk
             risk_scores['all'][i] = survival_risk
-
             censors[i] = os_event
             event_times[i] = os_time
 
@@ -350,13 +350,13 @@ def TCGA_Dataset_survival_prediction(fold, epochs, cancer_types, pretrain_model_
         train_dataloader = DataLoader(train_dataset, batch_size=32, drop_last=True)
         test_dataloader = DataLoader(test_dataset, batch_size=1)
         task = {'output_dim': 1}
-        model = DownStream_predictor(4, [6016, 6617, 4539, 7460], 64, [512],
-                                     [512], pretrain_model_path, task, omics_data_type, fixed, omics, 0.01)
+        model = DownStream_predictor(4, [6016, 6617, 4539, 7460], 64, [2048, 512],
+                                     [512, 2048], pretrain_model_path, task, omics_data_type, fixed, omics, 0.01)
         torch.cuda.set_device(device_id)
         model.cuda()
         param_groups = [
             {'params': model.cross_encoders.parameters(), 'lr': 0.0001},
-            {'params': model.downstream_predictor.parameters(), 'lr': 0.00001},
+            {'params': model.downstream_predictor.parameters(), 'lr': 0.0001},
 
         ]
         optimizer = torch.optim.Adam(param_groups)
@@ -379,8 +379,7 @@ def TCGA_Dataset_survival_prediction(fold, epochs, cancer_types, pretrain_model_
         torch.cuda.empty_cache()
 
     pancancer_c_index = pd.DataFrame(pancancer_c_index,
-                                     columns=['cancer', 'multiomics', 'gex', 'mut',
-                                              'cnv', 'gex_cnv', 'gex_mut', 'cnv_mut'])
+                                     columns=['cancer', 'multiomics'])
 
     pancancer_c_index.to_csv(f'all_pancancer_pretrain_cross_encoders_c_index_fold{fold}_all_omics.csv',
                              encoding='utf-8')
@@ -499,7 +498,7 @@ def TCGA_Dataset_classification(fold, epochs, pretrain_model_path, fixed, device
     test_dataloader = DataLoader(test_dataset, batch_size=64)
     task = {'output_dim': 32}
 
-    model = DownStream_predictor(4, [6016, 6617, 4539, 7460], 64, [2048, 1024, 512],
+    model = DownStream_predictor(4, [6016, 6617, 4539, 7460], 64, [2048, 512],
                                  [512, 2048], pretrain_model_path, task, omics_data_type, fixed, omics, 0.01)
 
     torch.cuda.set_device(device_id)
@@ -533,13 +532,8 @@ def TCGA_Dataset_classification(fold, epochs, pretrain_model_path, fixed, device
     torch.cuda.empty_cache()
 
 
-device_ids = [0, 4, 5, 6, 7]
-folds = 5
-all_epochs = 20
-
-
 #   multiprocessing pretrain_fold
-def multiprocessing_train_fold(function, func_args_list):
+def multiprocessing_train_fold(folds, function, func_args_list):
     processes = []
     for i in range(folds):
         p = mp.Process(target=function, args=func_args_list[i])
@@ -550,11 +544,41 @@ def multiprocessing_train_fold(function, func_args_list):
         p.join()
 
 
-#   example of TMO-Net pre-training
+"""
+example of TMO-Net pre-training for 5-folds
+
+device_ids = [0, 1, 2, 3, 4]
+folds = 5
+pretrain_epochs = 50
+downstream_epochs = 20
+
+#   TMO-Net 5-fold pre-training
+pretrain_func_args = [(i, pretrain_epochs, device_ids[i]) for i in range(folds)]
+multiprocessing_train_fold(folds, TCGA_Dataset_pretrain, pretrain_func_args)
+
+#   Pan-cancer classification
+class_func_args = [(i, downstream_epochs, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt',
+                    False, device_ids[i]) for i in range(folds)]
+multiprocessing_train_fold(folds, TCGA_Dataset_classification, class_func_args)
+
+#   Pan-cancer survival
+cancer_type_list = ['BLCA', 'BRCA', 'COAD', 'HNSC', 'KIRC', 'LIHC', 'LUAD', 'STAD']
+survival_func_args = [(i, downstream_epochs, cancer_type_list, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt',
+                       False, device_ids[i]) for i in range(folds)]
+multiprocessing_train_fold(folds, TCGA_Dataset_survival_prediction, survival_func_args)
+
+"""
+
+
+"""
+#   example of TMO-Net one fold training
 TCGA_Dataset_pretrain(0, 50, 0)
-# class_func_args = [(i, all_epochs, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
-# cancer_type_list = ['LGG', 'BLCA', 'BRCA', 'COAD', 'HNSC', 'KIRC', 'LIHC', 'LUAD', 'STAD']
-# survival_func_args = [(i, all_epochs, cancer_type_list, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold{i}_dim64.pt', False, device_ids[i]) for i in range(folds)]
-# pretrain_func_args = [(i, all_epochs, device_ids[i]) for i in range(folds)]
-#
-# multiprocessing_train_fold(TCGA_Dataset_classification, class_func_args)
+
+
+TCGA_Dataset_classification(0, 20, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold0_dim64.pt',
+                            False, 0)
+cancer_type_list = ['BLCA', 'BRCA', 'COAD', 'HNSC', 'KIRC', 'LIHC', 'LUAD', 'STAD']
+TCGA_Dataset_survival_prediction(0, 20, cancer_type_list, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold0_dim64.pt',
+                                 False, 0)
+"""
+
