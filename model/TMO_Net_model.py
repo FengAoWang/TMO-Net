@@ -336,6 +336,40 @@ class TMO_Net(nn.Module):
         embedding_tensor = torch.cat(embedding_tensor, dim=1)
         return embedding_tensor
 
+    def cross_modal_generation(self, input_x, omics):
+        values = list(omics.values())
+
+        output = [[0 for _ in range(self.k)] for _ in range(self.k)]
+        for (item, i) in enumerate(values):
+            for j in range(self.k):
+                output[i][j] = self.encoders[i][j](input_x[item])
+
+        reconstruct_omics = []
+        for i in range(self.k):
+            if i in values:
+                real_latent_z, real_mu, real_log_var = output[i][i]
+                reconstruct_self_omic = self.self_decoders[i](real_latent_z)
+                reconstruct_omics.append(reconstruct_self_omic)
+
+            else:
+                mu_set = []
+                log_var_set = []
+                for j in range(self.k):
+                    if (i != j) and (j in values):
+                        latent_z, mu, log_var = output[j][i]
+                        mu_set.append(mu)
+                        log_var_set.append(log_var)
+
+                poe_mu, poe_log_var = product_of_experts(mu_set, log_var_set)
+                poe_latent_z = reparameterize(poe_mu, poe_log_var)
+                reconstruct_cross_omic = self.self_decoders[i](poe_latent_z)
+                reconstruct_omics.append(reconstruct_cross_omic)
+
+        return reconstruct_omics
+
+
+
+
     @staticmethod
     def contrastive_loss(embeddings, labels, margin=1.0, distance='euclidean'):
 

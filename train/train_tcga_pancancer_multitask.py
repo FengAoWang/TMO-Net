@@ -1,6 +1,5 @@
 import os
 import sys
-sys.path.append('/home/wfa/project/clue')
 import torch
 from dataset.dataset import CancerDataset
 from model.TMO_Net_model import TMO_Net, DownStream_predictor, dfs_freeze, un_dfs_freeze
@@ -87,6 +86,7 @@ def train_pretrain(train_dataloader, model, epoch, cancer, optimizer, dsc_optimi
             un_dfs_freeze(model.discriminator)
             un_dfs_freeze(model.infer_discriminator)
             cross_infer_dsc_loss, dsc_loss = model.compute_dsc_loss(input_x, os_event.size(0), pretrain_omics)
+            # recon_omics = model.cross_modal_generation(input_x[:2], incomplete_omics)
             ad_loss = cross_infer_dsc_loss + dsc_loss
             total_ad_loss += dsc_loss.item()
 
@@ -572,7 +572,6 @@ multiprocessing_train_fold(folds, TCGA_Dataset_survival_prediction, survival_fun
 
 """
 #   example of TMO-Net one fold training
-TCGA_Dataset_pretrain(0, 50, 0)
 
 
 TCGA_Dataset_classification(0, 20, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold0_dim64.pt',
@@ -581,4 +580,5 @@ cancer_type_list = ['BLCA', 'BRCA', 'COAD', 'HNSC', 'KIRC', 'LIHC', 'LUAD', 'STA
 TCGA_Dataset_survival_prediction(0, 20, cancer_type_list, f'../model/model_dict/TCGA_pancancer_pretrain_model_fold0_dim64.pt',
                                  False, 0)
 """
+TCGA_Dataset_pretrain(0, 50, 0)
 
