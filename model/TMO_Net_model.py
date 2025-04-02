@@ -86,12 +86,9 @@ class encoder(nn.Module):
             self.FeatureEncoder.append(LinearLayer(hidden_dims[i], hidden_dims[i+1],
                                                    batchnorm=True, activation=activation))
 
-        self.mu_predictor = nn.Sequential(nn.Linear(hidden_dims[-1], latent_dim),
-                                          nn.ReLU()
-                                          )
-        self.log_var_predictor = nn.Sequential(nn.Linear(hidden_dims[-1], latent_dim),
-                                               nn.ReLU()
-                                               )
+        self.mu_predictor = nn.Sequential(nn.Linear(hidden_dims[-1], latent_dim))
+
+        self.log_var_predictor = nn.Sequential(nn.Linear(hidden_dims[-1], latent_dim))
 
     @staticmethod
     def reparameterize(mean, logvar):
@@ -413,7 +410,8 @@ class DownStream_predictor(nn.Module):
                                                   nn.Dropout(0.2),
                                                   nn.ReLU(),
 
-                                                  nn.Linear(64, task['output_dim']))
+                                                  nn.Linear(64, task['output_dim']),
+                                                  nn.Sigmoid())
         omics_values = set(omics.values())
         for i in range(self.k):
             if i not in omics_values:
