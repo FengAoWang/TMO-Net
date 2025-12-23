@@ -68,12 +68,12 @@ class LinearLayer(nn.Module):
 
     def forward(self, input_x):
         x = self.linear_layer(input_x)
-        if self.dropout is not None:
-            x = self.dropout(x)
         if self.batchnorm is not None:
             x = self.batchnorm(x)
         if self.activation is not None:
             x = self.activation(x)
+        if self.dropout is not None:
+            x = self.dropout(x)
         return x
 
 
